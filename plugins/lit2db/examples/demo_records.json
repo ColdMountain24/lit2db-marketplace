@@ -1,0 +1,89 @@
+{
+  "A_clean_regression_value": {
+    "record_id": "demoA",
+    "entity_type": "enzyme_substrate_pair",
+    "fields": [
+      {
+        "field_name": "km_value",
+        "value": 4.2,
+        "is_inferential": false,
+        "provenance": {
+          "kind": "literature",
+          "source_id": "PMC_demo_A",
+          "retrieval_timestamp": "2026-07-19T00:00:00Z",
+          "producing_process": "extractor@demo",
+          "source_status": "active",
+          "doi": "10.0000/demo.a",
+          "section": "Results",
+          "verbatim_quote": "The Michaelis constant Km was determined to be 4.2 uM at pH 7.4, 25 C.",
+          "char_offset": 1180
+        },
+        "confidence_components": {
+          "c_grounded": null,
+          "c_judge": 1.0,
+          "c_ensemble": 1.0,
+          "c_verbal": 0.9,
+          "c_consistency": 0.95
+        }
+      }
+    ]
+  },
+  "B_condition_multiplexed": {
+    "record_id": "demoB",
+    "entity_type": "enzyme_substrate_pair",
+    "fields": [
+      {
+        "field_name": "kcat_value",
+        "value": 73.6,
+        "is_inferential": false,
+        "provenance": {
+          "kind": "literature",
+          "source_id": "PMC_demo_B",
+          "retrieval_timestamp": "2026-07-19T00:00:00Z",
+          "producing_process": "extractor@demo",
+          "source_status": "active",
+          "doi": "10.0000/demo.b",
+          "section": "Results",
+          "verbatim_quote": "Turnover numbers of 73.6 and 40.8 s-1 were measured at 0.3% and 0.75% acetic acid respectively.",
+          "char_offset": 990
+        },
+        "confidence_components": {
+          "c_grounded": null,
+          "c_judge": 0.0,
+          "c_ensemble": 0.5,
+          "c_verbal": 0.7,
+          "c_consistency": 0.6
+        }
+      }
+    ]
+  },
+  "C_retracted_source": {
+    "record_id": "demoC",
+    "entity_type": "enzyme_substrate_pair",
+    "fields": [
+      {
+        "field_name": "km_value",
+        "value": 12.0,
+        "is_inferential": false,
+        "provenance": {
+          "kind": "literature",
+          "source_id": "PMC_demo_C",
+          "retrieval_timestamp": "2026-07-19T00:00:00Z",
+          "producing_process": "extractor@demo",
+          "source_status": "retracted",
+          "doi": "10.0000/demo.c",
+          "section": "Results",
+          "verbatim_quote": "Km was 12.0 uM under standard assay conditions.",
+          "char_offset": 400
+        },
+        "confidence_components": {
+          "c_grounded": null,
+          "c_judge": 1.0,
+          "c_ensemble": 1.0,
+          "c_verbal": 0.9,
+          "c_consistency": 0.95
+        }
+      }
+    ]
+  }
+}

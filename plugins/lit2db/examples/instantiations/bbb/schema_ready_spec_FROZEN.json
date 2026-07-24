@@ -1,0 +1,452 @@
+{
+  "research_question": "Catalog polymeric entities shown to cross the blood-brain barrier (classification)",
+  "ml_task": "classification",
+  "unit_of_analysis": "(composite_polymeric_entity, assay/measurement, condition_set, source)",
+  "fields": [
+    {
+      "name": "entity_id",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "canonical composite-formulation id (polymer+architecture+size+surface+cargo)",
+      "provenance_granularity": "one composite formulation",
+      "ledger_item_id": "L9"
+    },
+    {
+      "name": "polymer_bigsmiles",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "polymer identity in BigSMILES; CRIPT/PoLyInfo xref where available",
+      "provenance_granularity": "per entity",
+      "ledger_item_id": "L10"
+    },
+    {
+      "name": "architecture",
+      "type": "enum",
+      "unit": null,
+      "enum": [
+        "linear",
+        "branched",
+        "dendrimer",
+        "micelle",
+        "nanoparticle",
+        "hydrogel",
+        "other"
+      ],
+      "valid_range": null,
+      "definition": "polymer/carrier architecture",
+      "provenance_granularity": "per entity",
+      "ledger_item_id": "L11"
+    },
+    {
+      "name": "particle_size_nm",
+      "type": "float",
+      "unit": "nm",
+      "enum": null,
+      "valid_range": [
+        0.1,
+        2000.0
+      ],
+      "definition": "hydrodynamic diameter",
+      "provenance_granularity": "per entity/condition",
+      "ledger_item_id": "L11"
+    },
+    {
+      "name": "zeta_potential_mv",
+      "type": "float",
+      "unit": "mV",
+      "enum": null,
+      "valid_range": [
+        -100.0,
+        100.0
+      ],
+      "definition": "surface zeta potential",
+      "provenance_granularity": "per entity/condition",
+      "ledger_item_id": "L11"
+    },
+    {
+      "name": "surface_modification",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "PEGylation / targeting ligand / coating (free text + controlled where possible)",
+      "provenance_granularity": "per entity",
+      "ledger_item_id": "L11"
+    },
+    {
+      "name": "cargo",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "drug/gene payload as SMILES+InChIKey or biologic id; null if unloaded",
+      "provenance_granularity": "per entity",
+      "ledger_item_id": "L11"
+    },
+    {
+      "name": "species_model",
+      "type": "enum",
+      "unit": null,
+      "enum": [
+        "mouse",
+        "rat",
+        "human",
+        "in_vitro_bbb_model",
+        "other"
+      ],
+      "valid_range": null,
+      "definition": "test system",
+      "provenance_granularity": "per measurement",
+      "ledger_item_id": "L11"
+    },
+    {
+      "name": "administration_route",
+      "type": "enum",
+      "unit": null,
+      "enum": [
+        "IV",
+        "IP",
+        "intranasal",
+        "oral",
+        "in_situ_perfusion",
+        "in_vitro",
+        "other"
+      ],
+      "valid_range": null,
+      "definition": "route of administration / assay delivery",
+      "provenance_granularity": "per measurement",
+      "ledger_item_id": "L11"
+    },
+    {
+      "name": "assay",
+      "type": "enum",
+      "unit": null,
+      "enum": [
+        "in_situ_brain_perfusion",
+        "microdialysis_Kpuu",
+        "biodistribution_perfused",
+        "brain_plasma_ratio_logBB",
+        "CSF_sampling",
+        "in_vitro_transwell_Papp",
+        "BBB_on_chip",
+        "imaging_parenchymal",
+        "other"
+      ],
+      "valid_range": null,
+      "definition": "the assay that produced the crossing evidence",
+      "provenance_granularity": "per measurement",
+      "ledger_item_id": "L7"
+    },
+    {
+      "name": "evidence_tier",
+      "type": "enum",
+      "unit": null,
+      "enum": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6"
+      ],
+      "valid_range": null,
+      "definition": "directness tier of the assay (T1 strongest ... T6 in silico)",
+      "provenance_granularity": "per measurement",
+      "ledger_item_id": "L7"
+    },
+    {
+      "name": "crosses_bbb",
+      "type": "enum",
+      "unit": null,
+      "enum": [
+        "crosses",
+        "does_not_cross",
+        "insufficient_evidence",
+        "out_of_scope_route",
+        "disrupted_bbb_crossing"
+      ],
+      "valid_range": null,
+      "definition": "DERIVED label (rule v3): FIRST apply admissibility \u2014 if delivery_bypasses_bbb!=no -> out_of_scope_route; elif bbb_state=disrupted -> disrupted_bbb_crossing (segregated). THEN for admissible intact-BBB records: tier<=T3 & crossing_observed -> crosses; tier<=T3 & no_crossing -> does_not_cross; tier T4-T6 -> insufficient_evidence.",
+      "provenance_granularity": "per (entity, assay, condition-set, source)",
+      "ledger_item_id": "L8"
+    },
+    {
+      "name": "assay_result",
+      "type": "enum",
+      "enum": [
+        "crossing_observed",
+        "no_crossing_observed"
+      ],
+      "definition": "Raw assay outcome: did the entity show crossing in the reported assay, independent of tier strength.",
+      "provenance_granularity": "per measurement",
+      "ledger_item_id": "L8"
+    },
+    {
+      "name": "bbb_state",
+      "type": "enum",
+      "enum": [
+        "intact",
+        "disrupted",
+        "unspecified"
+      ],
+      "definition": "State of the BBB in the assay. disrupted = TBI/tumor/ischemia/ultrasound/mannitol opening. Crossing a disrupted barrier is a DIFFERENT claim from crossing an intact one.",
+      "ledger_item_id": "L16"
+    },
+    {
+      "name": "delivery_bypasses_bbb",
+      "type": "enum",
+      "enum": [
+        "no",
+        "yes_intranasal",
+        "yes_other"
+      ],
+      "definition": "Whether the delivery route bypasses the BBB. Intranasal/nose-to-brain reaches the CNS via olfactory/trigeminal routes WITHOUT crossing the vascular BBB. If yes, the record is not evidence of BBB crossing.",
+      "ledger_item_id": "L17"
+    }
+  ],
+  "controlled_vocab_bindings": {
+    "polymer": "BigSMILES/CRIPT/PoLyInfo",
+    "monomer_cargo": "SMILES+InChIKey",
+    "nano_reporting": "eNanoMapper/MIRIBEL"
+  },
+  "inclusion_exclusion": {
+    "include": "measured crossing evidence (in vivo or in vitro, tiered)",
+    "exclude": "pure in-silico from the positive set (recorded as T6 only)",
+    "version": "v1"
+  },
+  "negative_data_policy": "Actively collect polymeric entities reported as NOT crossing; publication bias skews positive, so negatives are sought, not assumed proportional.",
+  "evidence_tier_dimensions": [
+    "study_design",
+    "directness",
+    "consistency",
+    "risk_of_bias",
+    "effect_direction",
+    "certainty"
+  ],
+  "source_scope": {
+    "adapters": [
+      "literature"
+    ],
+    "corpora": [
+      "CNS-nanomedicine literature"
+    ],
+    "structured_databases": [],
+    "field_mapping": {},
+    "pinned_versions": {},
+    "retraction_recheck_cadence": "each_self_improve_cycle"
+  },
+  "ledger": {
+    "items": [
+      {
+        "item_id": "L1",
+        "kind": "axis_setting",
+        "summary": "Research question: catalog polymeric entities shown to cross the BBB",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {
+          "origin": "researcher-stated"
+        }
+      },
+      {
+        "item_id": "L2",
+        "kind": "axis_setting",
+        "summary": "Entity class in scope: polymeric entities",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {
+          "origin": "researcher-stated"
+        }
+      },
+      {
+        "item_id": "L3",
+        "kind": "field",
+        "summary": "Core property: crossing the blood-brain barrier",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {
+          "origin": "researcher-stated"
+        }
+      },
+      {
+        "item_id": "L4",
+        "kind": "axis_setting",
+        "summary": "Define 'crossing' via evidence tiering keyed to assay directness (in situ brain perfusion strong; CSF sampling weaker)",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {
+          "origin": "researcher-stated direction"
+        }
+      },
+      {
+        "item_id": "L5",
+        "kind": "axis_setting",
+        "summary": "ML task = binary classification (crosses / does-not-cross). PROPOSED default; regression on a continuous permeability value is the alternative.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED_WITH_EDIT",
+        "edit_note": "classification (crosses/does-not-cross) \u2014 RATIFIED gate 1",
+        "reject_reason": null,
+        "payload": {
+          "gate": 1
+        }
+      },
+      {
+        "item_id": "L6",
+        "kind": "axis_setting",
+        "summary": "Negative-data policy: include polymeric entities reported as NOT crossing. Load-bearing for classification; 'shown to cross' framing is positive-only.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {
+          "gate": 1
+        }
+      },
+      {
+        "item_id": "L7",
+        "kind": "axis_setting",
+        "summary": "Six-level evidence-tier ordinal by assay directness (see evidence-tier doc). PROPOSED.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {
+          "gate": 2
+        }
+      },
+      {
+        "item_id": "L8",
+        "kind": "threshold_constant",
+        "summary": "'Crosses' = a derived label requiring evidence at/above a ratified minimum tier (+ optional quantitative cutoff per assay). PROPOSED.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED_WITH_EDIT",
+        "edit_note": "'crosses' = evidence at/above tier T3; T4\u2013T5 recorded, not sufficient alone \u2014 RATIFIED gate 2",
+        "reject_reason": null,
+        "payload": {
+          "gate": 2
+        }
+      },
+      {
+        "item_id": "L9",
+        "kind": "structural_alt",
+        "summary": "Entity identity: model the crossing entity as a COMPOSITE formulation (polymer + size + surface modification + cargo) vs. the bare polymer. PROPOSED.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED_WITH_EDIT",
+        "edit_note": "entity = composite formulation (polymer+architecture+size+surface+cargo) \u2014 RATIFIED gate 3",
+        "reject_reason": null,
+        "payload": {
+          "gate": 3
+        }
+      },
+      {
+        "item_id": "L10",
+        "kind": "vocab_binding",
+        "summary": "Polymer identity bindings (EXISTING standards): BigSMILES line notation; CRIPT polymer data standard; PoLyInfo. Monomer/cargo: SMILES + InChIKey. Nano reporting: eNanoMapper / MIRIBEL. PROPOSED for ratification.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "L11",
+        "kind": "field",
+        "summary": "Conditioning variables: species/model, administration route, dose, polymer Mw/Mn/PDI, architecture, particle size (nm), zeta potential (mV), surface ligand/targeting moiety, cargo. PROPOSED.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "L12",
+        "kind": "axis_setting",
+        "summary": "Unit of analysis: one row = one (entity, assay/measurement, condition-set, source). PROPOSED.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "L13",
+        "kind": "axis_setting",
+        "summary": "Provenance granularity: explicit measurement_instance_id (same entity recurs across assays/conditions/papers). PROPOSED.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "L14",
+        "kind": "source_scope",
+        "summary": "Source scope: literature adapter over the CNS-nanomedicine corpus; optional structured adapter if a curated nano-BBB dataset is named. PROPOSED.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "L15",
+        "kind": "inclusion_criterion",
+        "summary": "Inclusion: measured (not predicted) crossing evidence; in vivo and in vitro admissible but tiered; exclude pure in-silico from the positive set. PROPOSED.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      }
+    ]
+  },
+  "spec_version": "v4",
+  "threshold_constants": {
+    "crosses_min_tier": "T3",
+    "rule_version": "v3",
+    "admissibility": "intact_bbb + no_route_bypass"
+  },
+  "changelog": [
+    "v1->v2 (Stage 8, from review PMC12943318): split assay_result from evidence_tier; added insufficient_evidence label; derivation rule v2. Fixes weak-tier-positive being mislabeled as a negative.",
+    "gold-set harness (n=25): calibrated auto_accept_threshold 0.95->0.74 (P=R=1.0 on gold); recorded IAA (accept kappa=0.839, tier kappa=0.649); 11 qualified crosser rows identified.",
+    "v3->v4 (Stage 8, from spot-check of 60 ML-ready rows): added bbb_state + delivery_bypasses_bbb admissibility predicate. Spot-check found 8 nose-to-brain (bypass) and 11 disrupted-BBB records mislabeled as intact-BBB crossers, and 28 with tier labels unconfirmed by the stored quote. Only 13/60 were a defensible intact-BBB core. Derivation rule v3 now gates on admissibility BEFORE tier. Existing production rows must be re-derived under v3.",
+    "v4 FROZEN: L16/L17 ratified (segregate/flag, retain). No re-derivation needed \u2014 v3 output stands."
+  ],
+  "routing": {
+    "auto_accept_threshold": 0.74,
+    "auto_accept_band": [
+      0.74,
+      0.84
+    ],
+    "calibration": {
+      "method": "gold-set sweep, precision>=0.9 then max F1",
+      "gold_set_n": 25,
+      "records_scored": 15,
+      "precision_at_threshold": 1.0,
+      "recall_at_threshold": 1.0,
+      "old_default": 0.95,
+      "old_default_auto_accepts": 0
+    },
+    "note": "0.74 chosen as the low edge of the P=R=1.0 band for maximal recall at full precision; 0.80 is a more conservative mid-band choice if precision drift is a concern."
+  },
+  "gold_set_iaa": {
+    "cohen_kappa_accept_reject": 0.839,
+    "cohen_kappa_tier": 0.649,
+    "n": 25,
+    "both_accepted": 13,
+    "interpretation": "accept/reject near-perfect; tier substantial. Tier < accept => sharpen T1-vs-T3 rubric (perfusion-corrected vs total brain uptake)."
+  },
+  "spec_status": "FROZEN",
+  "freeze_note": "v4 FROZEN 2026-07-01. L16 (bbb_state) and L17 (delivery_bypasses_bbb) researcher-ratified ACCEPTED with segregate-and-retain intent. Labels out_of_scope_route and disrupted_bbb_crossing are now ratified strata, retained in DB and excluded from the default intact-BBB ML-ready view. Rule v3 derivation stands."
+}

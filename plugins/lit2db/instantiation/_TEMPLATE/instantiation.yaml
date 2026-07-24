@@ -1,0 +1,44 @@
+# Domain Instantiation — _TEMPLATE
+
+# This is the ONLY place domain substance lives. Everything here must trace to a ratified
+# ratification-ledger item (protocol section 4). The scaffold in ../src is domain-blind.
+# Copy this folder to instantiation/<your-project>/ and fill in via the elicitation protocol.
+# DO NOT hand-edit fields into the frozen schema — they must come through the ledger.
+
+project_name: "<PLACEHOLDER>"
+spec_version: "v0"
+
+# --- Stage 0.5 output (schema-ready spec). Produced by the elicitation interview. --------
+research_question: "<researcher's own words — RATIFIED>"
+ml_task: "<classification | regression | generative | knowledge_graph>"   # Step A, drives everything
+unit_of_analysis: "<one row = one (…) — RATIFIED tuple>"                  # Step B
+
+# fields[] — each MUST carry ledger_item_id of an ACCEPTED / ACCEPTED_WITH_EDIT item
+fields: []          # e.g. see instantiation/example_enzyme_kinetics/ (worked example, protocol section 7)
+
+controlled_vocab_bindings: {}     # existing vocabularies the researcher RATIFIED (Step D)
+inclusion_exclusion: {}           # versioned (Step C axis 8)
+negative_data_policy: "<RATIFIED — driven by ml_task, Step C axis 7>"
+evidence_tier_dimensions: [study_design, directness, consistency, risk_of_bias, effect_direction, certainty]
+
+source_scope:
+  adapters: []                    # [literature] | [structured] | both (Step E)
+  corpora: []
+  structured_databases: []
+  field_mapping: {}               # source_field -> schema_field (RATIFIED)
+  pinned_versions: {}
+  retraction_recheck_cadence: "each_self_improve_cycle"
+
+# --- Stage 2 / calibrated constants (filled AFTER the gold set is annotated) -------------
+threshold_constants: {}           # versioned, citable (e.g. a classification cutoff)
+confidence_weights:               # override the illustrative DEFAULT_WEIGHTS after calibration
+  numeric: {}
+  inferential: {}
+routing:
+  auto_accept_threshold: 0.95     # blueprint 8 gate 2 default; recalibrate on gold set
+  borderline_margin: null         # width of the borderline-cutoff lane (blueprint 6)
+cost_cap_ratio: 3.0               # x gold-set cost (blueprint Stage 0)
+
+# --- Gold set ---------------------------------------------------------------------------
+gold_set_path: "../../gold/<project>.jsonl"
+gold_set_iaa: null                # Cohen's/Fleiss' kappa per inferential field (blueprint 8, D3)

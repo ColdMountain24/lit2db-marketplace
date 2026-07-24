@@ -1,0 +1,169 @@
+{
+  "ledger_version": "v4",
+  "validated_against": "reference-implementation/scaffold-key-files/spec.py::RatificationLedger",
+  "validated_on": "2026-07-14",
+  "validation_result": "17/17 items load; 0 errors; 17 ratified, 0 open",
+  "items": [
+    {
+      "item_id": "L1",
+      "kind": "axis_setting",
+      "status": "ACCEPTED",
+      "summary": "Research question: catalog polymeric entities shown to cross the BBB.",
+      "payload": {
+        "origin": "researcher-stated"
+      },
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L2",
+      "kind": "axis_setting",
+      "status": "ACCEPTED",
+      "summary": "Entity class in scope: polymeric entities.",
+      "payload": {
+        "origin": "researcher-stated"
+      },
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L3",
+      "kind": "field",
+      "status": "ACCEPTED",
+      "summary": "Core property: crossing the blood-brain barrier.",
+      "payload": {
+        "origin": "researcher-stated"
+      },
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L4",
+      "kind": "axis_setting",
+      "status": "ACCEPTED",
+      "summary": "Define 'crossing' via evidence tiering keyed to assay directness (in situ brain perfusion strong; CSF sampling weaker).",
+      "payload": {
+        "origin": "researcher-stated direction"
+      },
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L5",
+      "kind": "axis_setting",
+      "status": "ACCEPTED_WITH_EDIT",
+      "summary": "ML task = binary classification (crosses / does-not-cross). regression on a continuous permeability value is the alternative.",
+      "payload": {
+        "gate": 1
+      },
+      "edit_note": "classification (crosses/does-not-cross) \u2014 RATIFIED gate 1",
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L6",
+      "kind": "axis_setting",
+      "status": "ACCEPTED",
+      "summary": "Negative-data policy: include polymeric entities reported as NOT crossing. Load-bearing for classification; 'shown to cross' framing is positive-only.",
+      "payload": {
+        "gate": 1
+      },
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L7",
+      "kind": "axis_setting",
+      "status": "ACCEPTED",
+      "summary": "Six-level evidence-tier ordinal by assay directness (see evidence-tier doc)..",
+      "payload": {
+        "gate": 2
+      },
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L8",
+      "kind": "threshold_constant",
+      "status": "ACCEPTED_WITH_EDIT",
+      "summary": "'Crosses' = a derived label requiring evidence at/above a ratified minimum tier (+ optional quantitative cutoff per assay)..",
+      "payload": {
+        "gate": 2
+      },
+      "edit_note": "'crosses' = evidence at/above tier T3; T4\u2013T5 recorded, not sufficient alone \u2014 RATIFIED gate 2",
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L9",
+      "kind": "structural_alt",
+      "status": "ACCEPTED_WITH_EDIT",
+      "summary": "Entity identity: model the crossing entity as a COMPOSITE formulation (polymer + size + surface modification + cargo) vs. the bare polymer..",
+      "payload": {
+        "gate": 3
+      },
+      "edit_note": "entity = composite formulation (polymer+architecture+size+surface+cargo) \u2014 RATIFIED gate 3",
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L10",
+      "kind": "vocab_binding",
+      "status": "ACCEPTED",
+      "summary": "Polymer identity bindings (EXISTING standards): BigSMILES line notation; CRIPT polymer data standard; PoLyInfo. Monomer/cargo: SMILES + InChIKey. Nano reporting: eNanoMapper / MIRIBEL..",
+      "payload": {},
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L11",
+      "kind": "field",
+      "status": "ACCEPTED",
+      "summary": "Conditioning variables: species/model, administration route, dose, polymer Mw/Mn/PDI, architecture, particle size (nm), zeta potential (mV), surface ligand/targeting moiety, cargo..",
+      "payload": {},
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L12",
+      "kind": "axis_setting",
+      "status": "ACCEPTED",
+      "summary": "Unit of analysis: one row = one (entity, assay/measurement, condition-set, source)..",
+      "payload": {},
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L13",
+      "kind": "axis_setting",
+      "status": "ACCEPTED",
+      "summary": "Provenance granularity: explicit measurement_instance_id (same entity recurs across assays/conditions/papers)..",
+      "payload": {},
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L14",
+      "kind": "source_scope",
+      "status": "ACCEPTED",
+      "summary": "Source scope: literature adapter over the CNS-nanomedicine corpus; optional structured adapter if a curated nano-BBB dataset is named..",
+      "payload": {},
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L15",
+      "kind": "inclusion_criterion",
+      "status": "ACCEPTED",
+      "summary": "Inclusion: measured (not predicted) crossing evidence; in vivo and in vitro admissible but tiered; exclude pure in-silico from the positive set..",
+      "payload": {},
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L16",
+      "status": "ACCEPTED",
+      "summary": "Add bbb_state field (intact/disrupted/unspecified). Rationale: spot-check found 11/60 ML-ready rows were crossings of a pathologically disrupted BBB (TBI/tumor), a different claim from intact-BBB crossing. Proposes segregating them. REQUIRES RATIFICATION: whether disrupted-BBB crossings are out of scope is a domain-scope decision only the researcher makes.",
+      "origin": "agent_proposed",
+      "source_signal": "spot-check of production run (2026-07-01)",
+      "ratification_note": "Researcher-ratified: disrupted-BBB crossings are 'cheating but still useful' \u2014 retain in database, segregate/flag, exclude from default intact-BBB view.",
+      "kind": "field",
+      "proposed_by": "agent"
+    },
+    {
+      "item_id": "L17",
+      "status": "ACCEPTED",
+      "summary": "Add delivery_bypasses_bbb field (no/yes_intranasal/yes_other). Rationale: spot-check found 8/60 rows used intranasal delivery, which reaches the CNS via olfactory/trigeminal routes without crossing the vascular BBB. Proposes excluding them from BBB-crossing evidence. REQUIRES RATIFICATION: whether nose-to-brain is out of scope is a domain-scope decision.",
+      "origin": "agent_proposed",
+      "source_signal": "spot-check of production run (2026-07-01)",
+      "ratification_note": "Researcher-ratified: nose-to-brain (intranasal) bypass is 'cheating' \u2014 retain in database, segregate/flag as out_of_scope_route, exclude from default intact-BBB view.",
+      "kind": "field",
+      "proposed_by": "agent"
+    }
+  ]
+}

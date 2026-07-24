@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "lit2db": {
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp/lit2db_mcp/server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/src",
+        "LIT2DB_DB_PATH": "${CLAUDE_PLUGIN_ROOT}/examples/demo.db"
+      }
+    }
+  }
+}

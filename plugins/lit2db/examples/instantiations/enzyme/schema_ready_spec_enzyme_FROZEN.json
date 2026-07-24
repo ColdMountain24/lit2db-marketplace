@@ -1,0 +1,343 @@
+{
+  "research_question": "Predict enzyme reaction kinetic constants (Km, kcat, kcat/Km) from reaction identity and assay conditions.",
+  "ml_task": "regression",
+  "unit_of_analysis": "(enzyme, substrate, parameter, condition_set, source)",
+  "fields": [
+    {
+      "name": "reaction_id",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "canonical (EC|UniProt|substrate-InChIKey) reaction id",
+      "provenance_granularity": "one enzyme-substrate reaction",
+      "ledger_item_id": "E5"
+    },
+    {
+      "name": "ec_number",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "IUBMB EC classification",
+      "provenance_granularity": "enzyme identity",
+      "ledger_item_id": "E5"
+    },
+    {
+      "name": "uniprot",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "UniProt accession of the enzyme",
+      "provenance_granularity": "enzyme identity",
+      "ledger_item_id": "E5"
+    },
+    {
+      "name": "substrate_inchikey",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "substrate InChIKey (ChEBI cross-ref)",
+      "provenance_granularity": "substrate identity",
+      "ledger_item_id": "E5"
+    },
+    {
+      "name": "km_value",
+      "type": "float",
+      "unit": "uM",
+      "enum": null,
+      "valid_range": [
+        0.001,
+        10000000.0
+      ],
+      "definition": "Michaelis constant",
+      "provenance_granularity": "one measurement",
+      "ledger_item_id": "E4"
+    },
+    {
+      "name": "kcat_value",
+      "type": "float",
+      "unit": "s^-1",
+      "enum": null,
+      "valid_range": [
+        1e-06,
+        100000000.0
+      ],
+      "definition": "turnover number",
+      "provenance_granularity": "one measurement",
+      "ledger_item_id": "E4"
+    },
+    {
+      "name": "kcat_km_value",
+      "type": "float",
+      "unit": "M^-1 s^-1",
+      "enum": null,
+      "valid_range": [
+        0.0001,
+        10000000000.0
+      ],
+      "definition": "catalytic efficiency",
+      "provenance_granularity": "one measurement",
+      "ledger_item_id": "E4"
+    },
+    {
+      "name": "ph",
+      "type": "float",
+      "unit": null,
+      "enum": null,
+      "valid_range": [
+        0.0,
+        14.0
+      ],
+      "definition": "assay pH",
+      "provenance_granularity": "condition",
+      "ledger_item_id": "E6"
+    },
+    {
+      "name": "temperature_c",
+      "type": "float",
+      "unit": null,
+      "enum": null,
+      "valid_range": [
+        -20.0,
+        150.0
+      ],
+      "definition": "assay temperature C",
+      "provenance_granularity": "condition",
+      "ledger_item_id": "E6"
+    },
+    {
+      "name": "organism",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "source organism of the enzyme",
+      "provenance_granularity": "condition",
+      "ledger_item_id": "E6"
+    },
+    {
+      "name": "mutant",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "wildtype or mutation code",
+      "provenance_granularity": "condition",
+      "ledger_item_id": "E6"
+    },
+    {
+      "name": "buffer",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "assay buffer system (name/composition as reported)",
+      "provenance_granularity": "condition",
+      "ledger_item_id": "E6"
+    },
+    {
+      "name": "cofactor",
+      "type": "str",
+      "unit": null,
+      "enum": null,
+      "valid_range": null,
+      "definition": "cofactor/metal ion present in the assay as reported",
+      "provenance_granularity": "condition",
+      "ledger_item_id": "E6"
+    },
+    {
+      "name": "measurement_kind",
+      "type": "enum",
+      "unit": null,
+      "enum": [
+        "measured",
+        "computational"
+      ],
+      "valid_range": null,
+      "definition": "whether the kinetic value is experimentally measured (default tier) or computational/predicted (segregated stratum, E11)",
+      "provenance_granularity": "one measurement",
+      "ledger_item_id": "E11"
+    },
+    {
+      "name": "kinetics_stratum",
+      "type": "enum",
+      "unit": null,
+      "enum": [
+        "michaelis_menten",
+        "non_mm",
+        "inhibited",
+        "allosteric"
+      ],
+      "valid_range": null,
+      "definition": "kinetics model class; non-MM/inhibited/allosteric are retained but segregated from the default regression view (E12)",
+      "provenance_granularity": "one measurement",
+      "ledger_item_id": "E12"
+    }
+  ],
+  "controlled_vocab_bindings": {
+    "enzyme": "EC (IUBMB)",
+    "enzyme_seq": "UniProt",
+    "substrate": "ChEBI/InChIKey"
+  },
+  "inclusion_exclusion": {
+    "include": "measured steady-state Michaelis-Menten kinetic constants (default regression tier)",
+    "computational": "predicted/computational values retained as a separate stratum (measurement_kind='computational'), excluded from default view",
+    "exclude": "none by provenance; non-MM/inhibited/allosteric segregated via kinetics_stratum, not dropped"
+  },
+  "negative_data_policy": "Retain non-MM / inhibited / allosteric cases flagged via kinetics_stratum; retain computational values flagged via measurement_kind. Default regression view = measured + michaelis_menten only. Nothing discarded (mirrors BBB two-tier).",
+  "evidence_tier_dimensions": [
+    "study_design",
+    "directness",
+    "consistency",
+    "risk_of_bias",
+    "effect_direction",
+    "certainty"
+  ],
+  "source_scope": {
+    "adapters": [
+      "literature",
+      "structured"
+    ],
+    "corpora": [
+      "enzymology literature (open-access)"
+    ],
+    "structured_databases": [
+      "SABIO-RK",
+      "BRENDA"
+    ],
+    "field_mapping": {},
+    "pinned_versions": {},
+    "retraction_recheck_cadence": "each_self_improve_cycle"
+  },
+  "ledger": {
+    "items": [
+      {
+        "item_id": "E1",
+        "kind": "axis_setting",
+        "summary": "Research question: catalog enzyme reaction kinetic constants (Km, kcat, kcat/Km) with conditions.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E2",
+        "kind": "axis_setting",
+        "summary": "Entity class in scope: enzyme-substrate pairs (a reaction), not whole proteins.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E3",
+        "kind": "axis_setting",
+        "summary": "ML task = REGRESSION on continuous kinetic targets (Km, kcat, kcat/Km).",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {
+          "ml_task": "regression"
+        }
+      },
+      {
+        "item_id": "E4",
+        "kind": "field",
+        "summary": "Primary regression targets: km_value, kcat_value, kcat_km_value (each with unit + log-transform note).",
+        "proposed_by": "agent",
+        "status": "ACCEPTED_WITH_EDIT",
+        "edit_note": "kcat_km_value valid_range lower bound recalibrated 0.01 -> 1e-4 (researcher-ratified 2026-07-19). The agent-proposed 0.01 clipped 4 real curated slow-enzyme efficiencies (0.0018-0.0039 M^-1 s^-1) from the SABIO-RK pilot. The lower bound is a sanity floor (reject zero/negative/unit-error values), not a biological prior; 1e-4 admits observed slow enzymes with ~18x margin.",
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E5",
+        "kind": "field",
+        "summary": "Entity identity: EC number + UniProt accession (enzyme) + substrate InChIKey (ChEBI cross-ref).",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E6",
+        "kind": "field",
+        "summary": "Conditioning variables (regression features): pH, temperature (C), organism, mutant/wildtype, buffer, cofactor.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED_WITH_EDIT",
+        "edit_note": "Researcher ratified 2026-07-14: materialize buffer and cofactor as fields in addition to pH/temperature/organism/mutant (proposal named them in summary only).",
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E7",
+        "kind": "axis_setting",
+        "summary": "Unit of analysis: one row = one (enzyme, substrate, parameter, condition_set, source).",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E8",
+        "kind": "threshold_constant",
+        "summary": "Unit normalization: Km->uM, kcat->s^-1, kcat/Km->M^-1 s^-1; store raw+normalized.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E9",
+        "kind": "vocab_binding",
+        "summary": "Vocab bindings: EC (IUBMB), UniProt, ChEBI/InChIKey for substrate identity.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E10",
+        "kind": "source_scope",
+        "summary": "Dual adapter: literature (enzymology papers) + structured-data (SABIO-RK, BRENDA).",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E11",
+        "kind": "inclusion_criterion",
+        "summary": "Inclusion: measured steady-state Michaelis-Menten constants form the default tier; computational/predicted values RETAINED as a separate stratum (not excluded).",
+        "proposed_by": "agent",
+        "status": "ACCEPTED_WITH_EDIT",
+        "edit_note": "Researcher ratified 2026-07-14: upgraded from 'exclude computational' to 'retain computational as a separate stratum' (mirrors two-tier segregation pattern).",
+        "reject_reason": null,
+        "payload": {}
+      },
+      {
+        "item_id": "E12",
+        "kind": "axis_setting",
+        "summary": "Negative/edge policy: retain non-Michaelis-Menten & inhibited/allosteric cases flagged; segregate from default regression view.",
+        "proposed_by": "agent",
+        "status": "ACCEPTED",
+        "edit_note": null,
+        "reject_reason": null,
+        "payload": {}
+      }
+    ]
+  },
+  "spec_version": "v2-FROZEN-2026-07-19",
+  "spec_status": "FROZEN 2026-07-14 \u2014 all E1-E12 researcher-ratified; validated under unmodified scaffold spec.py. E6 & E11 ACCEPTED_WITH_EDIT."
+}
