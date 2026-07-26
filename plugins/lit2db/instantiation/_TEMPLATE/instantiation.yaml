@@ -153,3 +153,33 @@ tdm_keys:
 # --- Gold set ---------------------------------------------------------------------------
 gold_set_path: "../../gold/<project>.jsonl"
 gold_set_iaa: null                # Cohen's/Fleiss' kappa per inferential field (blueprint 8, D3)
+
+# The RATIFIED calibration block. Leave `gold_set:` null and the auto-accept threshold stays a
+# conservative placeholder and every datasheet reads UNCALIBRATED. Fill it in and the calibrated
+# value is used and the datasheet cites its n and agreement.
+#
+# This is deliberately not a runtime flag. A threshold whose provenance lives in a shell command
+# loses that provenance the first time somebody quotes the number: an inherited 0.95 -> 0.74
+# recalibration, measured on n=25 from a pilot, ended up governing a 191-record database with
+# the caveat detached everywhere it appeared.
+gold_set: null
+  # n_records: 50                 # REQUIRED
+  # n_papers: 15
+  # annotators: ["<name>"]        # REQUIRED, at least one. A single annotator is defensible if
+  #                               # every pipeline-vs-annotator disagreement is adjudicated and
+  #                               # the reason recorded — state it as a limitation, don't hide it.
+  # sampling_frame: source        # source | output | mixed. LOAD-BEARING: annotating the
+  #                               # pipeline's OUTPUT can only measure precision, because a
+  #                               # record the extractor never proposed cannot appear in the
+  #                               # sample. Only `source` can measure what was MISSED.
+  # per_field_agreement: {}       # per FIELD, not overall — it diagnoses whether the SCHEMA is
+  #                               # well defined. If two careful readers cannot apply a
+  #                               # definition consistently, the extractor cannot be right about
+  #                               # it either; there is no fact for it to be right about.
+  # intra_annotator_agreement:    # test-retest, for single-annotator designs
+  # adjudication_log: null        # path: every disagreement and why it was resolved that way
+  # calibrated_auto_accept_threshold: null
+  # independent_of_benchmark: true  # MUST be true to calibrate. Tuning the gate against the set
+  #                                 # you will later be scored on leaks the answer into the
+  #                                 # instrument and the comparison measures nothing.
+  # ledger_item_id: "<L-id>"      # REQUIRED — a calibration nobody ratified licenses no threshold

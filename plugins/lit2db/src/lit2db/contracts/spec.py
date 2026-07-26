@@ -115,6 +115,55 @@ class SourceScope(BaseModel):
     retraction_recheck_cadence: str = "each_self_improve_cycle"   # ratified default (D2)
 
 
+class GoldSet(BaseModel):
+    """The calibration evidence behind an auto-accept threshold — or its absence, stated.
+
+    A threshold without this block is a number somebody chose. With it, it is a number somebody
+    measured, and a reader can see on what. The failure this prevents is concrete and already in
+    the project's history: a threshold recalibrated `0.95 -> 0.74` on **n=25 from a pilot** went
+    on to govern a 191-record database with the caveat detached from the figure everywhere it
+    was quoted.
+
+    `sampling_frame` is load-bearing. Annotating the pipeline's OUTPUT can only measure
+    precision — a record the extractor never proposed cannot appear in the sample, so recall is
+    structurally unmeasurable. Only a SOURCE-sampled frame can find what the extractor missed.
+
+    Domain-INVARIANT: no field here encodes domain substance; `per_field_agreement` keys are
+    whatever the project's fields are called.
+    """
+    n_records: int = Field(ge=1)
+    n_papers: Optional[int] = None
+    annotators: list[str] = Field(min_length=1)
+    sampling_frame: Literal["source", "output", "mixed"]
+    # Per-field agreement is a diagnostic of the SCHEMA, not of the annotators: if two careful
+    # readers cannot apply a definition consistently, the extractor cannot be right about it
+    # either, because there is no fact for it to be right about.
+    per_field_agreement: dict[str, float] = Field(default_factory=dict)
+    intra_annotator_agreement: Optional[float] = None    # test-retest, single-annotator designs
+    adjudication_log: Optional[str] = None               # path/ref: every disagreement, and why
+    calibrated_auto_accept_threshold: Optional[float] = None
+    independent_of_benchmark: bool = True
+    ledger_item_id: str
+
+    @model_validator(mode="after")
+    def _calibration_cannot_unblind_the_benchmark(self):
+        """Calibrating a threshold on the set you will later be scored against is not calibration.
+
+        It leaks the answer into the instrument: the gate is tuned until it agrees with the
+        ground truth, and the subsequent comparison measures nothing.
+        """
+        if self.calibrated_auto_accept_threshold is not None and not self.independent_of_benchmark:
+            raise ValueError(
+                "gold set is not independent of the benchmark it will be scored against — "
+                "a threshold calibrated on the ground truth destroys a blind comparison. "
+                "Draw the calibration sample from papers the benchmark will not score.")
+        if self.sampling_frame == "output" and self.calibrated_auto_accept_threshold is not None:
+            # Permitted, but the limitation must travel with the number.
+            self.adjudication_log = self.adjudication_log or (
+                "OUTPUT-sampled: precision only; recall is structurally unmeasurable here")
+        return self
+
+
 class SchemaReadySpec(BaseModel):
     """The boundary object handed from Stage 0.5 to Stage 2."""
     research_question: str
@@ -129,7 +178,27 @@ class SchemaReadySpec(BaseModel):
                                  "risk_of_bias", "effect_direction", "certainty"])
     source_scope: SourceScope
     ledger: RatificationLedger
+    # Optional and ratified. Absent -> the routing threshold is the conservative placeholder and
+    # every datasheet must read UNCALIBRATED. Present -> the calibrated value is used and the
+    # datasheet cites its n and agreement. This is the toggle: it makes shipping a
+    # calibrated-LOOKING threshold with no calibration behind it structurally impossible, the
+    # same move `_corpus_is_defined_not_just_named` makes for the corpus.
+    gold_set: Optional[GoldSet] = None
     spec_version: str = "v0"
+
+    @property
+    def threshold_provenance(self) -> str:
+        """One line a datasheet can print verbatim. Never silently implies calibration."""
+        g = self.gold_set
+        if g is None or g.calibrated_auto_accept_threshold is None:
+            return ("UNCALIBRATED — the auto-accept threshold is a conservative placeholder, "
+                    "not a tuned value; no gold set has been ratified for this spec.")
+        who = ", ".join(g.annotators)
+        recall = "precision and recall" if g.sampling_frame == "source" else "precision only"
+        return (f"calibrated to {g.calibrated_auto_accept_threshold} on a gold set of "
+                f"{g.n_records} records"
+                + (f" from {g.n_papers} papers" if g.n_papers else "")
+                + f", {g.sampling_frame}-sampled ({recall}), annotated by {who}.")
 
     @model_validator(mode="after")
     def _every_field_ratified(self):
@@ -168,4 +237,16 @@ class SchemaReadySpec(BaseModel):
                     f"'{q.ledger_item_id}' which is not ACCEPTED/ACCEPTED_WITH_EDIT. "
                     f"Which papers are in scope is researcher substance and ratifies like "
                     f"any other substantive choice.")
+        return self
+
+    @model_validator(mode="after")
+    def _gold_set_is_ratified(self):
+        """A gold set is substance too — who annotated, on what frame, is a researcher call."""
+        if self.gold_set is None:
+            return self
+        if self.gold_set.ledger_item_id not in {i.item_id for i in self.ledger.ratified()}:
+            raise ValueError(
+                f"gold set traces to ledger item '{self.gold_set.ledger_item_id}' which is not "
+                "ACCEPTED/ACCEPTED_WITH_EDIT. A calibration that nobody ratified cannot license "
+                "a threshold.")
         return self
