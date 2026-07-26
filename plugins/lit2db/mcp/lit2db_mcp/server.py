@@ -222,6 +222,129 @@ def gate_upsert(record: dict, composite_confidence: float,
     return {"written": True, "decision": "allow", "record_id": rec.record_id}
 
 
+# ------------------------------------------------------------------------------------
+# Stage 1 — legal access resolution + the manual-acquisition queue
+# ------------------------------------------------------------------------------------
+# OA version ordinal (ratified D-026). A value read from a preprint is NOT the same claim as
+# the same value in the version of record: numbers move in peer review. Version therefore rides
+# in provenance and gates auto-accept -- it is not cosmetic metadata.
+VERSION_RANK = {"publishedVersion": 3, "acceptedVersion": 2, "submittedVersion": 1}
+CONTACT_EMAIL = os.environ.get("LIT2DB_CONTACT_EMAIL", "")
+
+
+def can_auto_accept_version(version) -> bool:
+    """Only the version of record may auto-accept. Anything earlier -- or unknown -- is
+    flagged for human review rather than silently trusted (D-026)."""
+    return VERSION_RANK.get(str(version or ""), 0) >= 3
+
+
+def _ua(email: str) -> dict:
+    e = email or CONTACT_EMAIL
+    return {"User-Agent": f"lit2db/0.2.0 (+https://github.com/ColdMountain24/lit2db-marketplace"
+                          f"{'; mailto:' + e if e else ''})"}
+
+
+def _get_json(url: str, email: str, timeout_s: float):
+    import ssl, urllib.request
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl.create_default_context()
+    req = urllib.request.Request(url, headers=_ua(email))
+    with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+@mcp.tool()
+def resolve_access(doi: str, email: str = "", timeout_s: float = 15.0) -> dict:
+    """Find the best LEGAL full-text location for a DOI (Stage 1, before any parse).
+
+    Checks Unpaywall for an openly-licensed copy — publisher-hosted or in a repository. Never
+    attempts to reach around a paywall; a source with no legal copy is returned with
+    `needs_manual=True` for the manual-acquisition queue, which is the ratified behaviour.
+
+    Unpaywall REQUIRES a contact email (free, no key). Pass `email` or set LIT2DB_CONTACT_EMAIL.
+    On one measured corpus this lifted minable coverage from 56% to 83% with no credentials.
+
+    Returns {ok, doi, is_oa, needs_manual, best:{url,host_type,version,license,auto_acceptable},
+    n_alternatives, oa_status}. `version` is load-bearing: repository copies are frequently
+    submitted (pre-review) or accepted (pre-copyedit) manuscripts, and only `publishedVersion`
+    may auto-accept (D-026). Fails CLOSED — a failed lookup is `ok=False`, never "no OA exists".
+    """
+    d = (doi or "").strip().removeprefix("https://doi.org/").removeprefix("doi:")
+    e = email or CONTACT_EMAIL
+    if not d:
+        return {"ok": False, "error": "no DOI supplied", "needs_manual": True}
+    if not e:
+        return {"ok": False, "needs_manual": True,
+                "error": "Unpaywall requires a contact email. Pass email= or set "
+                         "LIT2DB_CONTACT_EMAIL. This is a politeness requirement of the API, "
+                         "not authentication — it unlocks no paywalled content."}
+    try:
+        u = _get_json(f"https://api.unpaywall.org/v2/{urllib.parse.quote(d, safe='/')}"
+                      f"?email={urllib.parse.quote(e)}", e, timeout_s)
+    except Exception as exc:
+        return {"ok": False, "doi": d, "needs_manual": True,
+                "error": f"Unpaywall lookup failed ({type(exc).__name__}) — access is UNKNOWN, "
+                         f"not 'closed'. Retry before queueing for manual acquisition."}
+    locs = [l for l in (u.get("oa_locations") or []) if l.get("url")]
+    best = u.get("best_oa_location") or (locs[0] if locs else None)
+    if not best:
+        return {"ok": True, "doi": d, "is_oa": False, "needs_manual": True,
+                "oa_status": u.get("oa_status"), "title": u.get("title"),
+                "note": "no legal open copy found — route to the manual-acquisition queue"}
+    version = best.get("version")
+    return {"ok": True, "doi": d, "is_oa": True, "needs_manual": False,
+            "oa_status": u.get("oa_status"), "title": u.get("title"),
+            "n_alternatives": max(0, len(locs) - 1),
+            "best": {"url": best.get("url_for_pdf") or best.get("url"),
+                     "host_type": best.get("host_type"), "version": version,
+                     "license": best.get("license"),
+                     "auto_acceptable": can_auto_accept_version(version)}}
+
+
+@mcp.tool()
+def rank_manual_queue(items: list, terms: list = [], top_n: int = 25) -> dict:
+    """Rank sources that need manual acquisition by likely payoff, so a human's time goes to the
+    papers most worth chasing (Stage 1, the drained-queue discipline).
+
+    `items`: dicts with any of {doi, title, abstract, year, cited_by, journal}.
+    `terms`: the project's OWN priority terms, from the ratified instantiation — this tool
+    supplies the ranking MECHANISM and never a domain vocabulary of its own (the scaffold stays
+    domain-blind; what counts as interesting is the researcher's call).
+
+    Score = term hits in title/abstract (weighted, title counts double) + recency + log citations.
+    Every item is returned with a `why` breakdown: an opaque ranking a researcher cannot audit is
+    just a different way of hiding a decision.
+    """
+    import math
+    terms = [str(t).lower() for t in (terms or []) if str(t).strip()]
+    years = [i.get("year") for i in items if isinstance(i.get("year"), int)]
+    newest = max(years) if years else None
+    out = []
+    for it in items:
+        title, abstract = str(it.get("title") or ""), str(it.get("abstract") or "")
+        tl, al = title.lower(), abstract.lower()
+        hit_t = sorted({t for t in terms if t in tl})
+        hit_a = sorted({t for t in terms if t in al and t not in hit_t})
+        term_score = 2.0 * len(hit_t) + 1.0 * len(hit_a)
+        yr = it.get("year")
+        rec = 0.0 if not (isinstance(yr, int) and newest) else max(0.0, 1.0 - (newest - yr) / 10.0)
+        cited = it.get("cited_by") or 0
+        cite_score = math.log1p(max(0, int(cited))) / math.log(101)  # ~1.0 at 100 citations
+        score = term_score + 1.5 * rec + 1.0 * cite_score
+        out.append({**{k: it.get(k) for k in ("doi", "title", "year", "cited_by", "journal")},
+                    "score": round(score, 3),
+                    "why": {"terms_in_title": hit_t, "terms_in_abstract": hit_a,
+                            "recency": round(rec, 2), "citation_component": round(cite_score, 2)}})
+    out.sort(key=lambda r: (-r["score"], r.get("doi") or ""))
+    return {"n": len(out), "ranked_by": "term hits (title x2) + recency + log citations",
+            "terms_used": terms,
+            "note": "no terms supplied — ranking is recency + citations only" if not terms else "",
+            "queue": out[:max(0, top_n)]}
+
+
 def status_from_relations(relations) -> str:
     """Crossref `updated-by` relation types -> SourceStatus value. Pure, so it is testable
     without a network round-trip. Retraction is absorbing: a paper that was corrected and then

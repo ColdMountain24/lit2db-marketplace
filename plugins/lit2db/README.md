@@ -40,7 +40,7 @@ Local development:
 |---|---|
 | **6 agents** (`agents/`) | Stage-specialized subagents: scope-elicitation (Opus), ingest, extractor, **verifier-judge** (a different *model* from the extractor — Opus judging Sonnet; a different *provider* is opt-in, see below), entity-resolver, schema-architect. |
 | **3 hooks** (`hooks/`) | The deterministic control spine: a hard PreToolUse **write-gate**, a PostToolUse Pydantic-validate + observability emitter, a Stop/SessionEnd cost-cap + checkpoint. |
-| **MCP server** (`mcp/`) | The verify/route/gate spine as callable tools — `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`, plus `check_retraction` (Crossref-backed, fails closed). Self-contained SQLite; the only network call is the retraction check. |
+| **MCP server** (`mcp/`) | The verify/route/gate spine as callable tools — `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`, plus `check_retraction` (Crossref), `resolve_access` (Unpaywall), and `rank_manual_queue`. SQLite-backed; the three lookup tools are the only network calls and all fail closed. |
 | **Skill** (`skills/scope-elicitation/`) | The Stage-0.5 protocol: ten narrowing axes, the ratification ledger, the propose-structure / ratify-substance boundary. |
 | **Commands** (`commands/`) | `/lit2db-new-project`, `/lit2db-verify`, `/lit2db-status`. |
 | **Contracts** (`src/lit2db/contracts/`, `gate.py`) | Pydantic formalization of the ledger invariant, provenance record, evidence tier, confidence composite, and routing, plus the write-gate predicate the hook and the MCP tool both apply. **Domain-blind.** |
@@ -129,3 +129,29 @@ needs no API keys, and a plugin a researcher cannot install is a plugin nobody v
 genuinely different provider is opt-in. If you publish results from the default configuration, say
 "different model, same family" and record residual self-preference as a limitation — do not describe
 it as cross-family verification.
+
+## Getting the papers — coverage without credentials
+
+Set a contact email and most of the literature opens up:
+
+```
+export LIT2DB_CONTACT_EMAIL=you@university.edu
+```
+
+`resolve_access` uses it to find legal open copies via Unpaywall. On one measured corpus
+(bacterial terpenoids, 2020–2025, 102 papers) this lifted machine-readable coverage from
+**56% → 83%** with no credentials at all. The email is a politeness requirement of those APIs —
+it is **not** authentication and unlocks nothing paywalled.
+
+**Version matters, and the gate enforces it.** Most recovered copies live in repositories as
+`submittedVersion` (pre-peer-review) or `acceptedVersion` (pre-copyedit). Values move during peer
+review, so lit2db stamps the version in provenance and only lets `publishedVersion` auto-accept;
+everything earlier is flagged for human review. You get the recall without quietly citing a
+preprint number as the published one.
+
+**What it will not do:** reach around a paywall. No proxy cookies, no scraping article pages, no
+credential replay — automated bulk download through institutional access is the fastest way to get
+a whole university cut off. Sources it cannot obtain legally are pushed back to you via
+`rank_manual_queue`, ordered by likely payoff using *your* ratified priority terms, each with a
+`why` breakdown. Drop the PDFs you fetch into `sources/manual/` named by DOI and they ingest like
+any other source — same provenance, same version stamp, same retraction check.
