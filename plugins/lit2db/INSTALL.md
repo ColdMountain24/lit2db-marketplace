@@ -100,7 +100,7 @@ python3 scripts/run_demo.py
 
 **The one-line takeaway for the room:** *naive grounding passes all three; only record A actually
 enters the database. B is exactly the project's thesis — high surface grounding, caught by a
-stricter cross-family judge — and C shows the gate enforces provenance rules grounding can't see.*
+stricter adversarial judge — and C shows the gate enforces provenance rules grounding can't see.*
 
 Expected final line of output:
 
@@ -151,10 +151,16 @@ same verify → route → gate spine you just watched in the demo.
 
 ## What's real vs. what's stubbed (be honest with the room)
 
-- **Real today:** install path, all 6 MCP tools, the 3 hooks, the deterministic verify→route→gate
-  spine, the offline demo, the 9 tests, the elicitation interview.
-- **Supplied by the orchestrator at runtime:** the *adversarial cross-family judge* verdict. The
+- **Real today:** install path, all 13 MCP tools, the 3 hooks, the deterministic verify→route→gate
+  spine, the offline demo, the 201 tests, the elicitation interview.
+- **Supplied by the orchestrator at runtime:** the *adversarial judge* verdict. The
   MCP server ships a naive lexical/numeric grounding baseline so it's self-contained and testable;
-  the strict judge that produced the 39%-flagged pilot result runs in Claude Code itself (a
-  different model family than the extractor) and feeds its verdict into the score. In the demo,
-  the judge verdicts are pre-recorded fixtures so the thesis is reproducible without model calls.
+  the strict judge that produced the 39%-flagged pilot result runs in Claude Code itself and feeds
+  its verdict into the score. In the demo, the judge verdicts are pre-recorded fixtures so the
+  thesis is reproducible without model calls.
+- **The judge's independence is limited, and we state it (D-041).** By default the judge is a
+  different *model* from the extractor but the **same family** (Opus judging Sonnet), because a
+  second provider meters every call. Do not describe this as cross-family verification. The bias
+  runs one way — shared training means the judge agrees with the extractor more than it should —
+  so any F1-vs-factual-accuracy gap measured under this wiring is a **lower bound**. A different
+  provider is opt-in per D-025.

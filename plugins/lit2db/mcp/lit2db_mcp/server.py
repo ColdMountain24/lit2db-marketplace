@@ -25,8 +25,9 @@ Tools exposed (one per pipeline responsibility):
 
 Grounding here is deliberately the *naive lexical/numeric* check — it is the baseline the
 project empirically showed passes ~100% while true factual precision is far lower. The
-cross-family ADVERSARIAL JUDGE is the orchestrator's job (verifier-judge-agent, a different
-model family); its verdict is fed back as the c_judge component. Separation is the point:
+ADVERSARIAL JUDGE is the orchestrator's job (verifier-judge-agent, a different model — by
+default the same family, per D-041; a different provider is opt-in per D-025). Its verdict is
+fed back as the c_judge component. Separation is the point:
 the server never adjudicates meaning, only mechanical conformance.
 """
 from __future__ import annotations

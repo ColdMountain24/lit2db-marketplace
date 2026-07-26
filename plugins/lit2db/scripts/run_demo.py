@@ -4,7 +4,8 @@
 Runs the three demo records through validate -> ground -> (simulated judge) -> score/route ->
 gate, exactly the tools the MCP server exposes, and prints the routing outcome for each.
 
-The adversarial judge is a DIFFERENT model family in production (verifier-judge-agent). Here
+The adversarial judge is a DIFFERENT model in production (verifier-judge-agent) — by default a
+different model in the SAME family, never described as cross-family verification (D-041). Here
 its verdict is carried in each fixture's `c_judge` component so the demo is deterministic and
 offline: A/C judge-supported (1.0), B judge-ambiguous (0.0).
 
@@ -48,7 +49,7 @@ def main():
             fv["confidence_components"]["c_grounded"] = g["c_grounded"]
             print(f"  2. ground '{fv['field_name']}' : c_grounded={g['c_grounded']} ({g['mode']})")
         judge = rec["fields"][0]["confidence_components"].get("c_judge")
-        print(f"  3. adversarial judge (diff. family) : c_judge={judge}"
+        print(f"  3. adversarial judge (diff. model, same family) : c_judge={judge}"
               + ("  <- SUPPORTED" if judge and judge >= 0.5 else "  <- AMBIGUOUS (flag)"))
         scored = score_route(rec)
         comp = scored["_composite_confidence"]

@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # --- Source status (ratified addition D2: retraction / supersession) --------------
@@ -46,7 +46,9 @@ class ConfidenceComponents(BaseModel):
     c_logprob: Optional[float] = None      # mean token logprob (gray-box only)
     c_ensemble: Optional[float] = None     # agreement fraction across ensemble
     c_grounded: Optional[float] = None     # entailment (lit) or mapping-validation pass (structured)
-    c_judge: Optional[float] = None        # adversarial judge pass, different family
+    c_judge: Optional[float] = None        # adversarial judge pass; different MODEL, same family
+                                           # by default (D-041) — a gap measured under this
+                                           # wiring is a LOWER BOUND, never "cross-family"
     c_verbal: Optional[float] = None       # model verbalized confidence
     c_consistency: Optional[float] = None  # 1 - normalized self-consistency variance
 
@@ -81,6 +83,51 @@ class LiteratureProvenance(_ProvCommon):
     section: Optional[str] = None
     verbatim_quote: str               # load-bearing: every value carries its quote
     char_offset: int                  # load-bearing: disambiguates repeated entities
+
+    # --- D-038: how much of the source was actually READ ---------------------------
+    # Extraction reads the full source. Where a run truncates, the retained span is
+    # RECORDED here; an unstated truncation default is forbidden. This is not hygiene:
+    # a value grounded against 26% of a paper is not weakly verified, it is verified
+    # against a DIFFERENT DOCUMENT -- and counter-evidence, by construction, most often
+    # lives in the part that was cut. The BBB pilot sent `text[:12000]` (a measured 26.2%
+    # of the mean source) with no trace of it in any output; a reader of that database
+    # could not tell that three quarters of every paper was never seen.
+    # Offsets are in the store's coordinate system -- `full.txt` (see store.py).
+    source_chars_total: Optional[int] = Field(default=None, ge=0)
+    source_chars_read: Optional[int] = Field(default=None, ge=0)
+
+    @property
+    def retained_fraction(self) -> Optional[float]:
+        """Fraction of the source the extractor actually saw; None if not recorded."""
+        if self.source_chars_total is None or self.source_chars_read is None:
+            return None
+        if self.source_chars_total == 0:
+            return 0.0
+        return min(1.0, self.source_chars_read / self.source_chars_total)
+
+    @model_validator(mode="after")
+    def _retention_is_coherent(self):
+        """Both retention figures or neither, and no quote may cite unread text.
+
+        The second rule is the load-bearing one. If `char_offset` lands past
+        `source_chars_read`, the record cites a span the extractor never received --
+        the offset is wrong, or the quote was fabricated. Either way the provenance is
+        internally inconsistent and must not validate. This is the check that would
+        have caught the BBB truncation class at write time rather than at audit time.
+        """
+        total, read = self.source_chars_total, self.source_chars_read
+        if (total is None) != (read is None):
+            raise ValueError(
+                "source_chars_total and source_chars_read must be recorded together — "
+                "a retained count without its denominator states nothing (D-038)")
+        if total is not None and read > total:
+            raise ValueError(
+                f"source_chars_read ({read}) exceeds source_chars_total ({total})")
+        if read is not None and self.char_offset >= read:
+            raise ValueError(
+                f"char_offset {self.char_offset} lies beyond the {read} chars actually "
+                "read from the source: this value cites text the extractor never saw")
+        return self
 
 
 class StructuredProvenance(_ProvCommon):

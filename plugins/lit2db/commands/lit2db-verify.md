@@ -13,9 +13,10 @@ Steps (call the MCP tools in order):
    - structured values → `validate_mapping(value, field_spec)`.
    Feed each result back into the field's `confidence_components.c_grounded`.
 3. **Adversarial judge (do NOT skip):** hand each grounded value to the
-   **verifier-judge-agent** (a DIFFERENT model family). A naive grounding pass ~always
-   succeeds; the judge is where surface-grounded-but-wrong values get caught. Record its
-   verdict as `c_judge`.
+   **verifier-judge-agent** (a DIFFERENT model — by default the same family, D-041). A naive
+   grounding pass ~always succeeds; the judge is where surface-grounded-but-wrong values get
+   caught. Record its verdict as `c_judge`. When writing up results, say "different model, same
+   family" and report the gap as a lower bound — never "cross-family".
 4. `score_and_route` — composite confidence + per-field + record-level routing.
 5. `gate_upsert` — the HARD write-gate. It writes only if the record clears auto-accept, no
    field is quarantined/human_review, and every source_status is active. A denied record goes
