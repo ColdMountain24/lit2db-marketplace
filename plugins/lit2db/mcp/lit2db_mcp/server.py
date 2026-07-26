@@ -196,11 +196,16 @@ def _conn(db_path: str | None = None) -> sqlite3.Connection:
 
 @mcp.tool()
 def gate_upsert(record: dict, composite_confidence: float,
-                db_path: str = "", autoaccept: float = -1.0) -> dict:
+                db_path: str = "", autoaccept: float = -1.0,
+                require_contradiction_search: bool = False) -> dict:
     """The HARD write-gate (Stage 7). Writes to the DB IFF ALL hold:
       (1) composite_confidence >= auto-accept threshold,
       (2) no field routes to quarantine or human_review,
-      (3) every field's source_status is 'active'.
+      (3) every field's source_status is 'active',
+      (4) no field is contradicted by its own source (a BLOCK, never a confidence penalty —
+          every confidence signal scores the span the extractor chose to surface).
+    Set require_contradiction_search=True to also block values whose source was never
+    searched for counter-evidence: "we did not look" is not "we looked and it was clean".
     'deny' wins. A denied record is NOT written; its reasons are returned for routing to the
     human-review or quarantine queue. This is the deterministic gate that makes the ratified
     quality bar mechanical rather than advisory.
@@ -209,7 +214,8 @@ def gate_upsert(record: dict, composite_confidence: float,
     applies, so the two enforcement points cannot drift apart."""
     thr = autoaccept if autoaccept >= 0 else AUTOACCEPT
     rec = ExtractedRecord.model_validate(record)  # shape first: an unparseable record cannot be gated
-    reasons = gate_reasons(json.loads(rec.model_dump_json()), composite_confidence, thr)
+    reasons = gate_reasons(json.loads(rec.model_dump_json()), composite_confidence, thr,
+                           require_contradiction_search=require_contradiction_search)
     if reasons:
         return {"written": False, "decision": "deny", "reasons": reasons,
                 "route_to": "human_review_or_quarantine_queue"}

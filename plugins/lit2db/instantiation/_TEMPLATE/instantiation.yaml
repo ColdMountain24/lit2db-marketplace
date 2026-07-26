@@ -66,12 +66,49 @@ routing:
   # where 0.95 would auto-accept almost nothing. Blueprint 8, gate 2.
   auto_accept_threshold: 0.95
   borderline_margin: null         # width of the borderline-cutoff lane (blueprint 6)
+  # Counter-evidence (Stage 4c'). A contradiction found in a value's OWN source always
+  # blocks the write — that is not configurable, because every confidence signal scores the
+  # span the extractor chose, and a weighted mean would let four confident signals bury one
+  # real refutation. What IS configurable is whether an UNSEARCHED value may auto-accept:
+  # "we did not look" is not "we looked and it was clean". Leave false to keep existing
+  # behaviour; set true for a run where every auto-accept has been audited for cherry-picking
+  # (this flag is also the control/treatment switch if you are measuring the difference).
+  require_contradiction_search: false
 # Budget cap, in TOKENS — not currency. On a flat-rate subscription the marginal cost of a
 # run is zero until a limit is hit, so a dollar cap neither protects you nor describes what
 # you spent; what runs out is plan capacity, counted in tokens. Expressed as a ratio to your
 # gold-set run so it transfers across projects and survives price changes.
 token_cap_ratio: 3.0              # x gold-set tokens (blueprint Stage 0)
 gold_set_tokens: null             # tokens your gold-set run consumed; null disables the cap
+
+# --- Stage 0 operator config (NOT domain substance) --------------------------------------
+# Who is running this and how they reach sources. None of this is ratified schema content —
+# it is machine configuration, and it is the only part of this file a colleague fills in
+# without an elicitation interview.
+operator:
+  contact_email: null             # REQUIRED for source access. Unpaywall mandates a contact
+                                  # address, and it puts Crossref/NCBI/OpenAlex in their
+                                  # polite pools. It is NOT authentication and unlocks
+                                  # nothing paywalled — env: LIT2DB_CONTACT_EMAIL
+  orcid: null                     # optional; resolves to name + institution via the keyless
+                                  # ORCID public API. Used for DATABASE PROVENANCE (who built
+                                  # this, for the datasheet) and to tell you which publisher
+                                  # TDM programmes your institution may already hold.
+                                  # ORCID is an identity registry — it grants no access.
+  institution: null               # auto-filled from ORCID employments; override if wrong
+
+# Text-and-data-mining credentials. Per-publisher, per-institution, and entitlement is
+# checked against your campus network — a key grants MACHINE access to what you already
+# subscribe to, it does not grant subscriptions. NEVER commit real keys: point each entry at
+# an environment variable name and keep the value outside the repo.
+# Hard rule: use each publisher's designated TDM endpoint, rate-limit, and never replay proxy
+# session cookies. Bulk downloading through institutional credentials is the fastest way to
+# get an entire university's access revoked.
+tdm_keys:
+  elsevier: null                  # env var name, e.g. ELSEVIER_TDM_KEY  (dev.elsevier.com)
+  wiley: null                     # env var name, e.g. WILEY_TDM_TOKEN
+  springer: null                  # env var name, e.g. SPRINGER_TDM_KEY
+  # ACS has no comparable public TDM API — those sources route to the manual queue.
 
 # --- Gold set ---------------------------------------------------------------------------
 gold_set_path: "../../gold/<project>.jsonl"

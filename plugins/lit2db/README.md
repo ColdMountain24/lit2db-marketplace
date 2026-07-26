@@ -38,7 +38,7 @@ Local development:
 
 | Component | What it is |
 |---|---|
-| **6 agents** (`agents/`) | Stage-specialized subagents: scope-elicitation (Opus), ingest, extractor, **verifier-judge** (a different *model* from the extractor — Opus judging Sonnet; a different *provider* is opt-in, see below), entity-resolver, schema-architect. |
+| **7 agents** (`agents/`) | Stage-specialized subagents: scope-elicitation (Opus), ingest, extractor, **verifier-judge** (a different *model* from the extractor — Opus judging Sonnet; a different *provider* is opt-in, see below), entity-resolver, schema-architect, and **contradiction-hunter** (audits the extractor's choice of evidence — see below). |
 | **3 hooks** (`hooks/`) | The deterministic control spine: a hard PreToolUse **write-gate**, a PostToolUse Pydantic-validate + observability emitter, a Stop/SessionEnd cost-cap + checkpoint. |
 | **MCP server** (`mcp/`) | The verify/route/gate spine as callable tools — `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`, plus `check_retraction` (Crossref), `resolve_access` (Unpaywall), and `rank_manual_queue`. SQLite-backed; the three lookup tools are the only network calls and all fail closed. |
 | **Skill** (`skills/scope-elicitation/`) | The Stage-0.5 protocol: ten narrowing axes, the ratification ledger, the propose-structure / ratify-substance boundary. |
@@ -171,3 +171,24 @@ so a projection is never mistaken for a measurement). The Stop/SessionEnd hook e
 projects. `api_equivalent_cost()` exists for callers who genuinely pay per token; it takes
 its rates as an argument — no price is hardcoded, because published prices go stale and a
 baked-in constant produces wrong numbers forever.
+
+## Counter-evidence: auditing what the extractor chose to show you
+
+Grounding asks *"is this value in the paper?"* — a question the extractor got to pick the
+evidence for. Every downstream signal (lexical grounding, the adversarial judge, the
+confidence composite) then scores **that chosen span**. None of them can see what was left
+out, so cherry-picking is invisible to all of them.
+
+The `contradiction-hunter` agent asks the question nobody else does: read the rest of the
+source and find what argues *against* the value — a conflicting number, conditions the
+schema excludes, a later passage that supersedes it, a claim asserted then withdrawn.
+
+**A contradiction blocks the write; it is not a confidence penalty.** Folding it into the
+weighted mean would let four confident signals bury one real refutation. It behaves like
+`source_status=retracted`: some facts disqualify a value outright, however well it scored.
+
+Finding nothing is the expected outcome and is recorded as a distinct state — `clean` is not
+the same as `not_run`, because "we did not look" must never be reportable as rigor. Set
+`routing.require_contradiction_search: true` to block unaudited values as well; that flag is
+also the control/treatment switch if you want to measure how often counter-evidence changes
+an outcome.

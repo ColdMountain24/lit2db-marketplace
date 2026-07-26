@@ -106,14 +106,26 @@ def resolve_threshold(tool_input=None, env=None, default: float = DEFAULT_AUTOAC
     return default
 
 
-def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT):
+def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
+                 require_contradiction_search: bool = False):
     """Every reason this record must NOT be written. An empty list means the write passes.
 
     The ratified conditions, all of which must hold:
       1. composite_confidence >= the auto-accept threshold,
       2. neither the record nor any field routes to quarantine / human_review,
       3. every field carries provenance whose source_status is 'active' — a retracted or
-         superseded source never lands, however confident the extraction was.
+         superseded source never lands, however confident the extraction was,
+      4. no field carries counter-evidence from its own source.
+
+    Condition 4 is a BLOCK, not a penalty. Every confidence signal scores the span the
+    extractor chose to surface; a contradiction says that choice was unrepresentative, and
+    averaging it into a weighted mean lets four confident signals bury one real refutation.
+    Same logic as source_status: some facts disqualify a value outright.
+
+    `require_contradiction_search` additionally blocks values whose source was never
+    searched for counter-evidence — "we did not look" is not "we looked and it was clean."
+    Off by default so existing pipelines keep working; switching it on is also exactly the
+    control/treatment lever for measuring how often counter-evidence changes an outcome.
 
     Fails CLOSED: a malformed record, an absent composite, or a field with no provenance
     denies. The gate's whole value is that it cannot be talked past.
@@ -153,4 +165,17 @@ def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOA
         status = _enum_value(prov.get("source_status"))
         if status is not None and status != "active":
             reasons.append(f"field '{name}' source_status={status}")
+
+        # Counter-evidence. Blocking regardless of confidence — see the docstring.
+        found = fv.get("contradictions")
+        if isinstance(found, list) and found:
+            kinds = sorted({str(_enum_value((c or {}).get("kind")) or "other")
+                            for c in found if isinstance(c, dict)})
+            reasons.append(f"field '{name}' contradicted by its own source "
+                           f"({len(found)}x: {', '.join(kinds)})")
+        elif require_contradiction_search:
+            searched = _enum_value(fv.get("contradiction_search"))
+            if searched != "clean":
+                reasons.append(f"field '{name}' counter-evidence search "
+                               f"{searched or 'not_run'} — not searched is not clean")
     return reasons
