@@ -15,8 +15,8 @@ ratification-ledger items, and the `SchemaReadySpec` contract refuses to build o
 
 High extraction F1 does **not** imply factual accuracy: an extractor at F1 ≈ 0.87 can collapse
 to ≈ 47% factual accuracy under source-grounded judging. So the engineering investment goes
-into the **verification layer** — citation-grounded checks, a cross-family adversarial judge, a
-composite confidence, and a confidence-gated human-review router — not into the extractor. This
+into the **verification layer** — citation-grounded checks, an adversarial judge, a composite
+confidence, and a confidence-gated human-review router — not into the extractor. This
 plugin makes that layer the centerpiece: a deterministic verify → route → gate spine wraps the
 non-deterministic LLM extractor, and nothing reaches the database without clearing it.
 
@@ -38,9 +38,9 @@ Local development:
 
 | Component | What it is |
 |---|---|
-| **6 agents** (`agents/`) | Stage-specialized subagents: scope-elicitation (Opus), ingest, extractor, **verifier-judge (a *different* model family)**, entity-resolver, schema-architect. |
+| **6 agents** (`agents/`) | Stage-specialized subagents: scope-elicitation (Opus), ingest, extractor, **verifier-judge** (a different *model* from the extractor — Opus judging Sonnet; a different *provider* is opt-in, see below), entity-resolver, schema-architect. |
 | **3 hooks** (`hooks/`) | The deterministic control spine: a hard PreToolUse **write-gate**, a PostToolUse Pydantic-validate + observability emitter, a Stop/SessionEnd cost-cap + checkpoint. |
-| **MCP server** (`mcp/`) | The verify/route/gate spine as callable tools — `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`. Self-contained (SQLite); no external services. |
+| **MCP server** (`mcp/`) | The verify/route/gate spine as callable tools — `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`, plus `check_retraction` (Crossref-backed, fails closed). Self-contained SQLite; the only network call is the retraction check. |
 | **Skill** (`skills/scope-elicitation/`) | The Stage-0.5 protocol: ten narrowing axes, the ratification ledger, the propose-structure / ratify-substance boundary. |
 | **Commands** (`commands/`) | `/lit2db-new-project`, `/lit2db-verify`, `/lit2db-status`. |
 | **Contracts** (`src/lit2db/contracts/`, `gate.py`) | Pydantic formalization of the ledger invariant, provenance record, evidence tier, confidence composite, and routing, plus the write-gate predicate the hook and the MCP tool both apply. **Domain-blind.** |
@@ -55,7 +55,7 @@ Everything in the table above is implemented and exercised by the demo and the t
 |---|---|---|
 | `src/lit2db/stages/` | The nine-stage control flow as named, typed functions; `stage_6_route` is real. | The other stage bodies (`...`). Orchestration currently lives in the agents and commands. |
 | `src/lit2db/adapters/` | The `SourceAdapter` ABC — discover / acquire / emit / check_status — and the literature + structured subclasses that declare their downstream path. | The method bodies, which need network services (OpenAlex, Unpaywall, GROBID, Crossref). |
-| `src/lit2db/tools/` | Correct signatures and contracts for the in-process tools (`grobid_parse`, `check_retraction`, `extract_record`, `nli_entails`, `resolve_entity`, `db_upsert`, …). | The bodies, each raising `NotImplementedError` naming the service to wire. |
+| `src/lit2db/tools/` | An interface record only — signatures for `grobid_parse`, `nli_entails`, `db_upsert`, … **Not callable tools**; never list these in an agent's `tools:`. | The bodies, each raising `NotImplementedError` naming the service to wire. (`check_retraction` graduated to a real MCP tool.) |
 
 They are kept rather than deleted because the contract *is* the design: the adapter interface
 and the stage boundaries are what make the scaffold domain-invariant, and they are what the
@@ -120,3 +120,12 @@ and only then does ingestion begin.
 
 MIT (see plugin manifest). The scaffold is domain-blind; domain substance and any redistributed
 source material are governed by your project's own instantiation and licensing choices.
+
+## A note on judge independence
+
+The shipped judge is a different *model* from the extractor (Opus judging Sonnet) but the **same
+family**, which reduces self-preference bias without eliminating it. That is the default because it
+needs no API keys, and a plugin a researcher cannot install is a plugin nobody validates. Selecting a
+genuinely different provider is opt-in. If you publish results from the default configuration, say
+"different model, same family" and record residual self-preference as a limitation — do not describe
+it as cross-family verification.

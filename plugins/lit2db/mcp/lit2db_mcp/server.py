@@ -29,6 +29,7 @@ import os
 import re
 import sqlite3
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -219,6 +220,68 @@ def gate_upsert(record: dict, composite_confidence: float,
                  src_status, rec.model_dump_json(), datetime.now(timezone.utc).isoformat()))
     con.commit(); con.close()
     return {"written": True, "decision": "allow", "record_id": rec.record_id}
+
+
+def status_from_relations(relations) -> str:
+    """Crossref `updated-by` relation types -> SourceStatus value. Pure, so it is testable
+    without a network round-trip. Retraction is absorbing: a paper that was corrected and then
+    retracted is retracted, never 'corrected'."""
+    status = "active"
+    for rel in (relations or []):
+        r = str(rel or "").lower()
+        if r in ("retraction", "withdrawal"):
+            return "retracted"
+        if r == "new_version":
+            status = "superseded"
+        elif r in ("correction", "corrigendum", "erratum") and status == "active":
+            status = "corrected"
+    return status
+
+
+@mcp.tool()
+def check_retraction(doi: str, timeout_s: float = 10.0) -> dict:
+    """Retraction / supersession check against Crossref (blueprint 3, ratified addition D2).
+
+    Maps Crossref `updated-by` relations onto SourceStatus:
+      retraction|withdrawal -> retracted · correction|corrigendum|erratum -> corrected
+      new_version           -> superseded · (none)                        -> active
+
+    Returns {ok, status, evidence, checked_at}. **Fails CLOSED and says so**: if the lookup errors
+    or the DOI is unknown, `ok` is False and `status` is None. Do NOT stamp source_status='active'
+    on a failed check — an unverified source must route to human review, or the retraction gate
+    silently becomes a no-op. `active` here means "Crossref was reached and reports no retraction",
+    never "we could not tell".
+    """
+    import ssl, urllib.request  # noqa: E402 - kept local to the network path
+
+    # macOS python.org builds ship with no CA store wired up (ssl.get_default_verify_paths().cafile
+    # is None), so every HTTPS call dies with CERTIFICATE_VERIFY_FAILED until someone runs
+    # "Install Certificates.command". Prefer certifi when it is importable so the check works on a
+    # fresh machine instead of silently degrading to "unknown" for every source.
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl.create_default_context()
+
+    d = (doi or "").strip().removeprefix("https://doi.org/").removeprefix("doi:")
+    if not d:
+        return {"ok": False, "status": None, "evidence": "no DOI supplied", "checked_at": None}
+    now = datetime.now(timezone.utc).isoformat()
+    req = urllib.request.Request(
+        f"https://api.crossref.org/works/{urllib.parse.quote(d, safe='/')}",
+        headers={"User-Agent": "lit2db/0.1.0 (retraction-check; mailto:aryannnpathak@gmail.com)"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as r:
+            msg = json.loads(r.read().decode("utf-8"))["message"]
+    except Exception as e:
+        return {"ok": False, "status": None, "checked_at": now,
+                "evidence": f"Crossref lookup failed ({type(e).__name__}); status is UNKNOWN, "
+                            f"not active — route to human review"}
+    rels = [(u.get("type") or "").lower() for u in (msg.get("updated-by") or [])]
+    return {"ok": True, "status": status_from_relations(rels), "checked_at": now,
+            "evidence": {"doi": d, "relations": rels,
+                         "title": (msg.get("title") or [None])[0]}}
 
 
 @mcp.tool()

@@ -1,6 +1,21 @@
-"""Custom-tool stubs (blueprint 7.3). Correct signatures + contracts; the bodies are
-domain-invariant plumbing left as NotImplementedError where an external service or a
-domain choice is required. These are the in-process tools the Claude Code agents call.
+"""Custom-tool stubs (blueprint 7.3) — signatures and contracts, not callable tools.
+
+⚠ These are NOT agent-callable and must never be listed in an agent's `tools:` frontmatter.
+Agents can only call native Claude Code tools and tools the MCP server exposes; a name listed
+here resolves to nothing, which silently leaves the agent with fewer tools than intended. That
+is exactly how the Stage-3 extractor shipped unable to extract: `extractor-agent` declared
+`extract_record` and `retrieve_spans`, so it had, in practice, only `Read`.
+
+What the real wiring is:
+  - extract_record  -> there is no such tool. The extractor AGENT is the extractor: it reads the
+                       Stage-1 store and writes an ExtractedRecord JSON, which the deterministic
+                       spine then verifies. The LLM proposes; the server verifies.
+  - retrieve_spans  -> Grep/Glob over the offset-anchored store.
+  - resolve_entity  -> identifier lookup belongs to a version-pinned structured adapter.
+  - check_retraction-> IMPLEMENTED as an MCP tool (`check_retraction`, Crossref-backed).
+
+The remaining bodies raise NotImplementedError where an external service or a domain choice is
+still required. Keep them as the interface record they are.
 """
 from __future__ import annotations
 from datetime import datetime
