@@ -66,7 +66,12 @@ routing:
   # where 0.95 would auto-accept almost nothing. Blueprint 8, gate 2.
   auto_accept_threshold: 0.95
   borderline_margin: null         # width of the borderline-cutoff lane (blueprint 6)
-cost_cap_ratio: 3.0               # x gold-set cost (blueprint Stage 0)
+# Budget cap, in TOKENS — not currency. On a flat-rate subscription the marginal cost of a
+# run is zero until a limit is hit, so a dollar cap neither protects you nor describes what
+# you spent; what runs out is plan capacity, counted in tokens. Expressed as a ratio to your
+# gold-set run so it transfers across projects and survives price changes.
+token_cap_ratio: 3.0              # x gold-set tokens (blueprint Stage 0)
+gold_set_tokens: null             # tokens your gold-set run consumed; null disables the cap
 
 # --- Gold set ---------------------------------------------------------------------------
 gold_set_path: "../../gold/<project>.jsonl"

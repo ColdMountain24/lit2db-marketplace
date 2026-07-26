@@ -155,3 +155,19 @@ a whole university cut off. Sources it cannot obtain legally are pushed back to 
 `rank_manual_queue`, ordered by likely payoff using *your* ratified priority terms, each with a
 `why` breakdown. Drop the PDFs you fetch into `sources/manual/` named by DOI and they ingest like
 any other source — same provenance, same version stamp, same retraction check.
+
+## Cost accounting — in tokens, not dollars
+
+lit2db reports computational cost in **tokens**. That is deliberate. On a flat-rate
+subscription the marginal cost of a run is zero until a limit is hit, so an API-equivalent
+dollar figure describes neither what the researcher paid nor what they can afford — and it
+cannot compare two operators on different plans. Tokens can: they are what plan limits
+count, they don't move when prices do, and they make cross-condition comparisons meaningful.
+
+`src/lit2db/accounting.py` accumulates usage per unit of work and per pipeline stage, and
+projects a corpus total from a small calibration sample (always reporting the sample size,
+so a projection is never mistaken for a measurement). The Stop/SessionEnd hook enforces a
+**token** budget cap expressed as a ratio to your gold-set run, so it transfers across
+projects. `api_equivalent_cost()` exists for callers who genuinely pay per token; it takes
+its rates as an argument — no price is hardcoded, because published prices go stale and a
+baked-in constant produces wrong numbers forever.
