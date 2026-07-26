@@ -193,19 +193,32 @@ def agreement(values: list, rel_tol: float = DEFAULT_REL_TOL, steps=DEFAULT_STEP
     `ambiguous_modal` marks a tie for the largest group: at k=2 with a disagreement, or k=4
     split 2-2, there is no modal value. The fraction is still correct and still below any
     sane bar, but nothing should present a "consensus value" in that case.
+
+    **Absence is a dissenting vote, never a candidate.** A missing value stays in the
+    denominator — a value 1 of 3 passes proposed scores 1/3 — but it can never BE the modal.
+    Letting it win the vote would make a value that two passes missed resolve to "the
+    ensemble agrees there is nothing here", and the proposal would then vanish instead of
+    reaching a human. One pass finding a compound the others missed is exactly the signal
+    worth surfacing, not the one worth deleting.
     """
     k = len(values)
     if k == 0:
         return {"c_ensemble": None, "k": 0, "n_agreeing": 0, "modal_value": None,
-                "ambiguous_modal": False, "groups": []}
+                "ambiguous_modal": False, "groups": [], "n_missing": 0}
 
     vals = list(values)
     if expand_binomials:
         strs = [str(v) for v in vals if v is not None]
         vals = [(_expand_binomial(str(v), strs) if v is not None else None) for v in vals]
 
+    present = [v for v in vals if v is not None]
+    n_missing = k - len(present)
+    if not present:
+        return {"c_ensemble": None, "k": k, "n_agreeing": 0, "modal_value": None,
+                "ambiguous_modal": False, "groups": [], "n_missing": n_missing}
+
     groups: list[dict] = []
-    for v in vals:
+    for v in present:
         for g in groups:
             if values_agree(g["representative"], v, rel_tol, steps, synonyms):
                 g["members"].append(v)
@@ -217,9 +230,10 @@ def agreement(values: list, rel_tol: float = DEFAULT_REL_TOL, steps=DEFAULT_STEP
     top = len(groups[0]["members"])
     ambiguous = len(groups) > 1 and len(groups[1]["members"]) == top
     return {
-        "c_ensemble": top / k,
+        "c_ensemble": top / k,          # denominator is k, so absences still cost
         "k": k,
         "n_agreeing": top,
+        "n_missing": n_missing,
         "modal_value": None if ambiguous else groups[0]["representative"],
         "ambiguous_modal": ambiguous,
         "groups": [{"value": g["representative"], "n": len(g["members"])} for g in groups],
@@ -264,3 +278,136 @@ def summarize(values: list, **kw) -> dict:
     return {"c_ensemble": agr["c_ensemble"], "c_consistency": consistency(values),
             "modal_value": agr["modal_value"], "ambiguous_modal": agr["ambiguous_modal"],
             "k": agr["k"], "n_agreeing": agr["n_agreeing"], "groups": agr["groups"]}
+
+
+# --- merging k passes into one record -----------------------------------------------------
+# Everything above compares values for ONE field. This merges whole passes, and the hard part
+# is not comparison — it is ALIGNMENT. Three independent passes over one paper may find five
+# compounds, four, and six. Before any field can be compared, you have to know which record in
+# pass A is the same entity as which record in pass B, and getting that wrong silently compares
+# the kcat of one enzyme against the kcat of a different one.
+#
+# Records are therefore aligned on the entity's IDENTITY FIELD — Stage-0.5 axis 5, "the
+# canonical id that resolves two records to the same entity". Which field that is, is ratified
+# substance and comes from the frozen spec; this module never guesses it.
+#
+# The key move: **a record a pass did not find is a missing VALUE for every one of its
+# fields.** That folds record-level disagreement into the field-level machinery already built
+# — `values_agree` treats None as agreeing only with None — so a compound only 1 of 3 passes
+# saw cannot reach an agreement above 1/3 on any of its fields, and cannot auto-accept. No
+# separate record-level score is needed, and none can drift out of sync with the field-level one.
+
+def _fields_of(rec: dict) -> dict:
+    return {f.get("field_name"): f for f in (rec.get("fields") or []) if isinstance(f, dict)}
+
+
+def _identity(rec: dict, id_field: Optional[str], steps) -> Optional[str]:
+    if not id_field:
+        return None
+    f = _fields_of(rec).get(id_field)
+    return normalize(f.get("value"), steps) if f else None
+
+
+def merge_passes(passes: list, identity_fields: Optional[dict] = None,
+                 rel_tol: float = DEFAULT_REL_TOL, steps=DEFAULT_STEPS,
+                 synonyms: Optional[dict] = None, expand_binomials: bool = False) -> dict:
+    """Merge k extraction passes into one record set carrying ensemble signals.
+
+    `passes` is k lists of ExtractedRecord-shaped dicts, one list per pass.
+    `identity_fields` maps entity_type -> the field name that identifies the entity
+    (e.g. {"compound": "compound_name"}). Ratified per project; never inferred here.
+
+    Returns `{records, ensemble, k, alignment}` — merged records with `c_ensemble` /
+    `c_consistency` filled in, plus a per-field agreement report for the review queue. The
+    report is returned ALONGSIDE rather than stuffed into the record, because `FieldValue` is
+    a frozen contract and widening it to carry debug detail is exactly the kind of quiet
+    schema growth the ratification invariant exists to prevent.
+
+    Works on plain dicts so this module stays stdlib-only, like `lit2db.gate`.
+    """
+    k = len(passes)
+    if k == 0:
+        raise ValueError("merge_passes needs at least one pass")
+    identity_fields = identity_fields or {}
+
+    # Index every pass by (entity_type, normalized identity).
+    indexed, keys = [], []
+    for records in passes:
+        idx = {}
+        for rec in records or []:
+            etype = rec.get("entity_type")
+            ident = _identity(rec, identity_fields.get(etype), steps)
+            if ident is None:
+                # No identity field ratified for this type. Positional alignment across
+                # INDEPENDENT passes would be a coin flip, so it is only safe when the type
+                # is single-record per pass — the one-row-per-paper case.
+                same = [r for r in records if r.get("entity_type") == etype]
+                if len(same) > 1:
+                    raise ValueError(
+                        f"entity_type {etype!r} has {len(same)} records in one pass but no "
+                        f"identity field. Ratify one (Stage-0.5 axis 5) — aligning records "
+                        f"across independent passes by position would compare different "
+                        f"entities to each other.")
+                ident = "(singleton)"
+            key = (etype, ident)
+            idx[key] = rec
+            if key not in keys:
+                keys.append(key)
+        indexed.append(idx)
+
+    merged, report = [], {}
+    for key in keys:
+        etype, ident = key
+        present = [idx.get(key) for idx in indexed]
+        field_names = []
+        for rec in present:
+            for name in _fields_of(rec or {}):
+                if name not in field_names:
+                    field_names.append(name)
+
+        out_fields = {}
+        for name in field_names:
+            per_pass = [(_fields_of(rec or {}).get(name) or {}) for rec in present]
+            values = [f.get("value") if f else None for f in per_pass]
+            summ = summarize(values, rel_tol=rel_tol, steps=steps, synonyms=synonyms,
+                             expand_binomials=expand_binomials)
+
+            # Provenance must come from a pass that actually produced the surviving value —
+            # pairing the modal value with another pass's quote would manufacture evidence.
+            chosen = None
+            for f, v in zip(per_pass, values):
+                if v is None or not f:
+                    continue
+                if summ["ambiguous_modal"] or values_agree(v, summ["modal_value"],
+                                                           rel_tol, steps, synonyms):
+                    chosen = f
+                    break
+            if chosen is None:
+                continue                       # no pass produced this field; nothing to emit
+
+            out_fields[name] = {
+                **{key_: chosen[key_] for key_ in ("field_name", "value", "provenance",
+                                                   "evidence_tier", "is_inferential")
+                   if key_ in chosen},
+                "confidence_components": {
+                    **(chosen.get("confidence_components") or {}),
+                    "c_ensemble": summ["c_ensemble"],
+                    **({"c_consistency": summ["c_consistency"]}
+                       if summ["c_consistency"] is not None else {}),
+                },
+            }
+            report[f"{etype}:{ident}:{name}"] = {
+                "n_agreeing": summ["n_agreeing"], "k": k,
+                "ambiguous_modal": summ["ambiguous_modal"], "groups": summ["groups"],
+                "found_by_passes": sum(1 for r in present if r is not None),
+            }
+
+        if out_fields:
+            seed = next(r for r in present if r is not None)
+            merged.append({"record_id": seed.get("record_id"), "entity_type": etype,
+                           "fields": list(out_fields.values())})
+
+    return {"records": merged, "ensemble": report, "k": k,
+            "alignment": [{"entity_type": e, "identity": i,
+                           "found_by_passes": sum(1 for idx in indexed if (e, i) in idx)}
+                          for (e, i) in keys]}

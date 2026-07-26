@@ -203,3 +203,33 @@ def test_summarize_emits_both_signals_for_a_confidence_composite():
     assert s["c_ensemble"] == pytest.approx(2 / 3)
     assert 0.0 <= s["c_consistency"] <= 1.0
     assert s["k"] == 3 and s["n_agreeing"] == 2
+
+
+# --- absence is a dissenting vote, never a candidate -----------------------------------------
+# The bug this pins: when more passes missed a value than found it, None won the vote, the
+# modal became "nothing", and the whole record was dropped. A compound one pass found and two
+# missed is the single most interesting thing an ensemble can surface — deleting it is the
+# worst available outcome, and it happened silently.
+
+def test_a_value_only_one_pass_found_survives_with_low_agreement():
+    r = agreement(["geosmin", None, None])
+    assert r["modal_value"] == "geosmin"        # NOT None
+    assert r["c_ensemble"] == pytest.approx(1 / 3)
+    assert r["n_missing"] == 2
+
+
+def test_absence_still_costs_even_though_it_cannot_win():
+    """It stays in the denominator: 2 of 3 agreeing is 2/3, not 2/2."""
+    assert agreement([12.4, 12.4, None])["c_ensemble"] == pytest.approx(2 / 3)
+    assert agreement([12.4, 12.4])["c_ensemble"] == 1.0
+
+
+def test_two_proposals_and_one_absence_is_a_tie_not_a_consensus():
+    r = agreement(["a", "b", None])
+    assert r["ambiguous_modal"] and r["modal_value"] is None
+    assert r["c_ensemble"] == pytest.approx(1 / 3)
+
+
+def test_all_passes_missing_yields_no_signal():
+    r = agreement([None, None, None])
+    assert r["c_ensemble"] is None and r["n_missing"] == 3

@@ -13,6 +13,9 @@ Tools exposed (one per pipeline responsibility):
   - build_store         Stage 1     JATS XML -> the offset-anchored store on disk.
   - locate_spans        Stage 1     Exact CHARACTER offsets for a string in a store.
   - validate_mapping    Stage 4b    Structured-adapter grounding: type/range/enum conformance.
+  - merge_extraction_passes
+                        Stage 3     Align k passes on the ratified identity field and
+                                     merge them into one record set with ensemble signals.
   - aggregate_ensemble  Stage 3     k extraction passes -> c_ensemble + c_consistency,
                                      compared under a stated normalization (never by an LLM).
   - score_and_route     Stage 5/6   Composite confidence + per-field + record-level routing.
@@ -48,7 +51,7 @@ from lit2db.contracts import (  # noqa: E402
     ConfidenceComponents, default_route, DEFAULT_WEIGHTS, required_agreement,
 )
 from lit2db.contracts.spec import SchemaReadySpec  # noqa: E402
-from lit2db.ensemble import DEFAULT_STEPS, summarize  # noqa: E402
+from lit2db.ensemble import DEFAULT_STEPS, merge_passes, summarize  # noqa: E402
 from lit2db.store import (  # noqa: E402
     build_from_jats, find_spans, quote_at, section_of, write_store,
 )
@@ -202,6 +205,42 @@ def locate_spans(source_dir: str, needle: str, limit: int = 50) -> dict:
 # ------------------------------------------------------------------------------------
 # Stage 3 — ensemble agreement across k extraction passes
 # ------------------------------------------------------------------------------------
+@mcp.tool()
+def merge_extraction_passes(passes: list, identity_fields: dict = {}, rel_tol: float = 0.01,
+                            expand_binomials: bool = False, synonyms: dict = {}) -> dict:
+    """Merge k extraction passes into one record set carrying ensemble signals (Stage 3).
+
+    `passes` is k lists of ExtractedRecord-shaped dicts — one list per independent pass.
+    `identity_fields` maps entity_type -> the field that identifies the entity, e.g.
+    `{"compound": "compound_name"}`. That mapping is ratified project substance (Stage-0.5
+    axis 5, authoritative identity); this tool never guesses it.
+
+    **Alignment, not comparison, is the hard part.** Three passes over one paper may find
+    five compounds, four, and six, in different orders. Aligning them by position would
+    compare one entity's measurement against another's and produce a confident, grounded,
+    entirely wrong record — so records with no ratified identity field are refused unless the
+    type is single-record per pass.
+
+    A record a pass did not find becomes a missing VALUE for each of its fields, so
+    record-level and field-level disagreement flow through one mechanism and cannot drift
+    apart. A value only 1 of 3 passes proposed scores 1/3 and cannot auto-accept — but it is
+    still emitted, because a compound the other passes missed is the most interesting thing
+    an ensemble can surface, not something to delete.
+
+    Returns `{records, ensemble, k, alignment}`. The per-field agreement report rides
+    ALONGSIDE the records rather than inside them: `FieldValue` is a frozen contract and
+    widening it to carry review detail is the quiet schema growth the invariant forbids.
+    """
+    res = merge_passes(list(passes), identity_fields=dict(identity_fields) or None,
+                       rel_tol=rel_tol, expand_binomials=expand_binomials,
+                       synonyms=dict(synonyms) or None)
+    # Shape-check what we hand back; a merge that produced an invalid record should fail here
+    # rather than three stages later at the gate.
+    for r in res["records"]:
+        ExtractedRecord.model_validate(r)
+    return res
+
+
 @mcp.tool()
 def aggregate_ensemble(values: list, rel_tol: float = 0.01, expand_binomials: bool = False,
                        synonyms: dict = {}, normalizers: list = []) -> dict:

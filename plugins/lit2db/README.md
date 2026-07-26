@@ -40,9 +40,9 @@ Local development:
 |---|---|
 | **7 agents** (`agents/`) | Stage-specialized subagents: scope-elicitation (Opus), ingest, extractor, **verifier-judge** (a different *model* from the extractor — Opus judging Sonnet; a different *provider* is opt-in, see below), entity-resolver, schema-architect, and **contradiction-hunter** (audits the extractor's choice of evidence — see below). |
 | **3 hooks** (`hooks/`) | The deterministic control spine: a hard PreToolUse **write-gate**, a PostToolUse Pydantic-validate + observability emitter, a Stop/SessionEnd cost-cap + checkpoint. |
-| **MCP server** (`mcp/`) | The verify/route/gate spine as callable tools — `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`, plus `check_retraction` (Crossref), `resolve_access` (Unpaywall), and `rank_manual_queue`. SQLite-backed; the three lookup tools are the only network calls and all fail closed. |
+| **MCP server** (`mcp/`) | The deterministic spine as callable tools — `build_store` + `locate_spans` (Stage 1), `merge_extraction_passes` + `aggregate_ensemble` (Stage 3), `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`, plus `check_retraction` (Crossref), `resolve_access` (Unpaywall), and `rank_manual_queue`. SQLite-backed; the three lookup tools are the only network calls and all fail closed. |
 | **Skill** (`skills/scope-elicitation/`) | The Stage-0.5 protocol: ten narrowing axes, the ratification ledger, the propose-structure / ratify-substance boundary. |
-| **Commands** (`commands/`) | `/lit2db-new-project`, `/lit2db-verify`, `/lit2db-status`. |
+| **Commands** (`commands/`) | `/lit2db-new-project`, `/lit2db-extract` (one source end-to-end), `/lit2db-verify`, `/lit2db-status`. |
 | **Contracts** (`src/lit2db/contracts/`, `gate.py`) | Pydantic formalization of the ledger invariant, provenance record, evidence tier, confidence composite, and routing, plus the write-gate predicate the hook and the MCP tool both apply. **Domain-blind.** |
 | **Scaffolding** (`src/lit2db/{stages,adapters,tools}/`) | Deliberate stubs — see below. |
 
@@ -54,7 +54,7 @@ Everything in the table above is implemented and exercised by the demo and the t
 | Package | Ships | Does not ship |
 |---|---|---|
 | `src/lit2db/stages/` | The nine-stage control flow as named, typed functions; `stage_6_route` is real. | The other stage bodies (`...`). Orchestration currently lives in the agents and commands. |
-| `src/lit2db/adapters/` | The `SourceAdapter` ABC — discover / acquire / emit / check_status — and the literature + structured subclasses that declare their downstream path. | The method bodies, which need network services (OpenAlex, Unpaywall, GROBID, Crossref). |
+| `src/lit2db/adapters/` | The `SourceAdapter` ABC — discover / acquire / emit / check_status — and the literature + structured subclasses that declare their downstream path. | The method bodies. Note the JATS path no longer needs them: `lit2db.store` turns Europe PMC full-text XML into the offset-anchored store directly, and GROBID is required only for PDFs. |
 | `src/lit2db/tools/` | An interface record only — signatures for `grobid_parse`, `nli_entails`, `db_upsert`, … **Not callable tools**; never list these in an agent's `tools:`. | The bodies, each raising `NotImplementedError` naming the service to wire. (`check_retraction` graduated to a real MCP tool.) |
 
 They are kept rather than deleted because the contract *is* the design: the adapter interface
@@ -195,6 +195,18 @@ measurement. Without that normalization the ensemble would mostly detect typogra
 the review queue with correct values; **dissent has to imply substance** for the bar above it
 to mean anything. Domain knowledge stays yours: synonym maps come from the ratified
 controlled vocabulary, never from the scaffold.
+
+Merging k passes is `merge_extraction_passes`, and **alignment is the hard part, not
+comparison**: three passes over one paper may find five compounds, four, and six, in different
+orders. Records align on the entity's ratified identity field (Stage-0.5 axis 5) — aligning by
+position would compare one entity's measurement against another's and yield a confident,
+well-grounded, entirely wrong record, so a type with several records per pass and no ratified
+identity field is refused rather than guessed at.
+
+A record a pass did not find becomes a *missing value* for each of its fields, so record-level
+and field-level disagreement flow through one mechanism and cannot drift apart. Something only
+1 of 3 passes saw scores 1/3 and cannot auto-accept — but it is still emitted. A compound the
+other passes missed is the most interesting thing an ensemble produces, not something to drop.
 
 The bar is a ratified setting, stated as integers because the signal is quantized to j/k:
 
