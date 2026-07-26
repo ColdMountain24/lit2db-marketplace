@@ -93,9 +93,54 @@ DEFAULT_WEIGHTS = {
                     "c_verbal": 0.15, "c_consistency": 0.15, "c_logprob": 0.00},
 }
 
+# --- The ensemble agreement bar -------------------------------------------------------
+# `c_ensemble` is an agreement FRACTION over k independent extraction passes, so the only
+# achievable values are j/k. It is not a continuous score, and a threshold expressed as a
+# float invites settings that cannot mean anything: at k=3 anything in (0.667, 1.0] is
+# identical to demanding unanimity. So the ratified knob is a PAIR OF INTEGERS — "how many
+# of how many passes must agree" — and the fraction is derived. Express a knob in the units
+# it can actually take, or operators will tune a dial that isn't connected to anything.
+DEFAULT_ENSEMBLE_K = 3          # passes run — overridable per project
+DEFAULT_MIN_AGREEING = None     # None == UNANIMITY, and it TRACKS k (see below)
+MIN_ENSEMBLE_K = 2              # below this there is no ensemble to agree
+_EPS = 1e-9                     # j/k is float-inexact; never compare agreement bare
+
+
+def required_agreement(k: int = DEFAULT_ENSEMBLE_K,
+                       min_agreeing: Optional[int] = DEFAULT_MIN_AGREEING) -> float:
+    """The `c_ensemble` value that clears the bar, from the ratified integer pair.
+
+    Unanimity (`min_agreeing is None`) is the shipped default: it is the conservative
+    direction, and a dissenting pass is not self-explaining — it may have read a different
+    table row, taken the mutant instead of the wild type, or hallucinated, and the fraction
+    cannot tell you which. Routing that to a human is the honest response.
+
+    **`None` means unanimity and follows k, rather than pinning an integer.** If the policy
+    were stored as the literal `3`, an operator raising k from 3 to 5 for more rigour would
+    silently land on 3-of-5 — a bare majority, the opposite of what they asked for. A policy
+    must not change meaning because a different setting moved.
+    """
+    if k < MIN_ENSEMBLE_K:
+        raise ValueError(
+            f"ensemble_k must be >= {MIN_ENSEMBLE_K}; got {k}. One pass trivially agrees "
+            f"with itself, so k=1 yields c_ensemble=1.0 and converts the agreement gate from "
+            f"a block into a pass — it would assert agreement that was never measured. To run "
+            f"without an ensemble, leave c_ensemble unset instead: an absent signal routes to "
+            f"human_review, which fails closed.")
+    if min_agreeing is None:
+        min_agreeing = k
+    if not (1 <= min_agreeing <= k):
+        raise ValueError(f"min_agreeing must be in 1..k; got {min_agreeing} of {k}")
+    return min_agreeing / k
+
+
 # --- Starting routing rules (blueprint 6, "Resolved here"). Calibrate on the gold set.
-def default_route(fv: FieldValue) -> RouteDecision:
-    """Reference routing logic. Deliberately simple and overridable per project."""
+def default_route(fv: FieldValue, min_agreement: float = 1.0) -> RouteDecision:
+    """Reference routing logic. Deliberately simple and overridable per project.
+
+    `min_agreement` is the ensemble bar, normally derived from the instantiation's ratified
+    (k, min_agreeing) pair via `required_agreement`. Default is unanimity.
+    """
     # A contradiction outranks every confidence signal. If the source itself argues against
     # the value, no amount of grounding, ensemble agreement, or judge approval redeems it —
     # those all measured a span the extractor chose.
@@ -107,8 +152,8 @@ def default_route(fv: FieldValue) -> RouteDecision:
     grounded = c.c_grounded if c.c_grounded is not None else 0.0
     judge_pass = (c.c_judge or 0.0) >= 0.5
     ensemble = c.c_ensemble if c.c_ensemble is not None else 0.0
-    if judge_pass and ensemble >= 0.999 and grounded >= 0.9:
+    if judge_pass and ensemble >= min_agreement - _EPS and grounded >= 0.9:
         return RouteDecision.auto_accept
-    if (0.6 <= grounded < 0.9) or (0.0 < ensemble < 0.999):
+    if (0.6 <= grounded < 0.9) or (0.0 < ensemble < min_agreement - _EPS):
         return RouteDecision.cheap_repair
     return RouteDecision.human_review

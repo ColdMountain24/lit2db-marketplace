@@ -72,6 +72,15 @@ self-updating-database work builds on. Nothing in the demo path depends on them.
   (span-entailment grounding) and a **structured-data adapter** (mapping-validation grounding,
   which bypasses extraction).
 
+**A corpus is defined by the query that produced it, not by its name.** A literature spec
+will not freeze unless it records the **executable query verbatim** — traced to a ratified
+`source_scope` ledger item, alongside the counts it returned. "Papers about X since 2020" is
+an intent; term forms, field scoping, and date bounds all move the corpus boundary silently,
+and a corpus whose query was never written down cannot be reproduced, audited, or refreshed.
+This is the same invariant as the schema half: an agent cannot slip in an unratified field,
+and a project cannot ship an undefined corpus. Which papers are in scope is researcher
+substance, and it ratifies like everything else.
+
 ## Nine stages
 
 Control Plane → Ingest → **Stage 0.5 Scope Elicitation** → Schema Design → Extract → **Verify**
@@ -171,6 +180,36 @@ so a projection is never mistaken for a measurement). The Stop/SessionEnd hook e
 projects. `api_equivalent_cost()` exists for callers who genuinely pay per token; it takes
 its rates as an argument — no price is hardcoded, because published prices go stale and a
 baked-in constant produces wrong numbers forever.
+
+## The ensemble: k passes, and agreement decided deterministically
+
+Extraction runs `k` independent passes (default 3) over the same source, and
+`aggregate_ensemble` compares them to produce `c_ensemble` and `c_consistency`. **A value may
+only auto-accept with the agreement its project ratified** — unanimity by default.
+
+Agreement is computed, never judged. Asking a model "do these agree?" gives a different answer
+on different days, and a routing bar built on that means nothing. So the comparison is
+deterministic and normalized first: `4.2` == `4.20`, `"4.2 uM"` == `"4.2 µM"`, `12.4 s⁻¹` ==
+`12.4 s-1` — but `2-MIB` != `2-methylisoborneol`, and a number embedded in a name is not a
+measurement. Without that normalization the ensemble would mostly detect typography, filling
+the review queue with correct values; **dissent has to imply substance** for the bar above it
+to mean anything. Domain knowledge stays yours: synonym maps come from the ratified
+controlled vocabulary, never from the scaffold.
+
+The bar is a ratified setting, stated as integers because the signal is quantized to j/k:
+
+```yaml
+routing:
+  ensemble_k: 3                 # independent extraction passes (>= 2)
+  ensemble_min_agreeing: null   # null -> unanimity, tracking k; or pin an integer 1..k
+```
+
+`null` means unanimity and *follows* k, so raising `ensemble_k` to 5 tightens the bar to 5-of-5
+rather than silently loosening it to 3-of-5. `k=1` is refused: one pass trivially agrees with
+itself, which would convert this gate from a block into a pass. To run without an ensemble,
+leave `c_ensemble` unset — an absent signal routes to human review, failing closed.
+
+Note `k` multiplies the largest stage of a run: k passes means k times the extraction tokens.
 
 ## Counter-evidence: auditing what the extractor chose to show you
 

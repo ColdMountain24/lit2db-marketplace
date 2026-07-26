@@ -49,6 +49,19 @@ evidence_tier_dimensions: [study_design, directness, consistency, risk_of_bias, 
 source_scope:
   adapters: []                    # [literature] | [structured] | both (Step E)
   corpora: []
+  # REQUIRED whenever `literature` is in adapters — the spec will refuse to freeze without it.
+  # A corpus is defined by the query that produced it, not by its name: term forms, field
+  # scoping, and date bounds all move the boundary silently. Record the query verbatim, and
+  # ratify it as a `source_scope` ledger item — which papers are in scope is YOUR call, not
+  # the agent's. `result_counts` is how a later refresh detects that the same query drifted.
+  queries: []
+  # - corpus: "europepmc"
+  #   query: 'TITLE:"<term>" AND (FIRST_PDATE:[2020-01-01 TO 2025-12-31])'
+  #   endpoint: "https://www.ebi.ac.uk/europepmc/webservices/rest"
+  #   executed_at: "2026-01-01T00:00:00Z"
+  #   result_counts: {hits: 0, retrievable: 0}
+  #   notes: "<known exclusions, term-form caveats>"
+  #   ledger_item_id: "<a RATIFIED source_scope item>"
   structured_databases: []
   field_mapping: {}               # source_field -> schema_field (RATIFIED)
   pinned_versions: {}
@@ -74,6 +87,33 @@ routing:
   # behaviour; set true for a run where every auto-accept has been audited for cherry-picking
   # (this flag is also the control/treatment switch if you are measuring the difference).
   require_contradiction_search: false
+  # Ensemble agreement (Stage 3/5). The extractor runs `k` independent passes; `c_ensemble`
+  # is the fraction agreeing with the modal value, and this is how much agreement a value
+  # needs before it may auto-accept.
+  #
+  # Stated as TWO INTEGERS, not a fraction, because the signal is quantized to j/k: at k=3
+  # there is nothing between 2/3 and 1.0, so "lowering the bar to 0.95" would change nothing
+  # while looking like a real adjustment. Say how many passes of how many must agree.
+  #
+  # Leave min_agreeing NULL for UNANIMITY — the shipped default, the conservative direction,
+  # and it TRACKS k. Pinning the literal 3 would mean that raising k from 3 to 5 for more
+  # rigour silently lands you on 3-of-5, a bare majority: the opposite of what you asked for.
+  # A policy must not change meaning because a different setting moved.
+  #
+  # A dissenting pass does not explain itself: it may have read a different table row, taken
+  # the mutant instead of the wild type, or hallucinated, and the fraction cannot tell you
+  # which — so the default sends it to a human rather than picking a tolerance for you.
+  # How much extraction disagreement your project tolerates is YOUR call. Ratify it.
+  #
+  # k must be >= 2. k=1 is REFUSED: one pass trivially agrees with itself, so it would report
+  # perfect agreement and turn this gate from a block into a pass — claiming a rigour that was
+  # never exercised. To run without an ensemble, leave c_ensemble unset; an absent signal
+  # routes to human_review, which fails closed. That is the opposite outcome, and the safe one.
+  #
+  # Note k multiplies the largest stage of the run: k passes means k times the extraction
+  # tokens. Check it against token_cap_ratio below before raising it.
+  ensemble_k: 3                   # independent extraction passes (>= 2)
+  ensemble_min_agreeing: null     # null -> unanimity, tracking k; or pin an integer 1..k
 # Budget cap, in TOKENS — not currency. On a flat-rate subscription the marginal cost of a
 # run is zero until a limit is hit, so a dollar cap neither protects you nor describes what
 # you spent; what runs out is plan capacity, counted in tokens. Expressed as a ratio to your

@@ -77,9 +77,38 @@ class FieldSpec(BaseModel):
     ledger_item_id: str                # MUST trace to a ratified ledger item
 
 
+class CorpusQuery(BaseModel):
+    """The executable search that DEFINES a literature corpus, recorded verbatim.
+
+    A corpus is not named by its subject, it is defined by the query that produced it. Naming
+    it ("<topic>, 2020-2025") records the intent and loses the definition: term forms, field
+    scoping, and date bounds all silently move the boundary, and a corpus whose query was not
+    written down cannot be reproduced, audited, or re-run for a refresh.
+
+    `result_counts` is stored alongside because it is how you detect that a re-run drifted --
+    the same query against a growing index returns more next month, and that is a fact the
+    refresh cycle must be able to see rather than absorb.
+
+    Domain-INVARIANT: `query` is an opaque string. The scaffold never parses it, never
+    generates it, and never judges whether it is the right one -- that is researcher substance
+    and it ratifies through the ledger like every other substantive choice.
+    """
+    corpus: str                                    # the adapter/source this runs against
+    query: str                                     # the EXACT executable query string
+    endpoint: Optional[str] = None                 # what it was executed against
+    executed_at: Optional[str] = None              # ISO timestamp of the run it describes
+    result_counts: dict[str, int] = Field(default_factory=dict)   # e.g. hits / retrievable
+    notes: Optional[str] = None                    # e.g. known exclusions, term-form caveats
+    ledger_item_id: str                            # MUST trace to a ratified ledger item
+
+
 class SourceScope(BaseModel):
     adapters: list[Literal["literature", "structured"]]
     corpora: list[str] = Field(default_factory=list)
+    # The executable definition behind `corpora`. Enforced for the literature adapter by
+    # SchemaReadySpec below -- a named corpus with no recorded query is a corpus nobody can
+    # reproduce, which is the failure this field exists to make structurally impossible.
+    queries: list[CorpusQuery] = Field(default_factory=list)
     structured_databases: list[str] = Field(default_factory=list)
     field_mapping: dict[str, str] = Field(default_factory=dict)   # source_field -> schema_field
     pinned_versions: dict[str, str] = Field(default_factory=dict) # db -> version/snapshot
@@ -111,4 +140,32 @@ class SchemaReadySpec(BaseModel):
                     f"field '{f.name}' traces to ledger item '{f.ledger_item_id}' "
                     f"which is not ACCEPTED/ACCEPTED_WITH_EDIT. "
                     f"The frozen schema is exactly the ratified set (protocol section 1).")
+        return self
+
+    @model_validator(mode="after")
+    def _corpus_is_defined_not_just_named(self):
+        """A literature corpus must carry the executable query that produced it, ratified.
+
+        The schema half of the invariant was already enforced -- an agent cannot slip an
+        unratified FIELD into a frozen spec. The corpus half was not: a spec could name
+        'europepmc' and freeze, with the actual boundary of the corpus living nowhere. That
+        makes the resulting database unreproducible in exactly the way the method claims it
+        is not, and it hides a substantive researcher decision (which papers are in scope)
+        behind a structural-looking string.
+        """
+        if "literature" not in self.source_scope.adapters:
+            return self
+        if not self.source_scope.queries:
+            raise ValueError(
+                "source_scope declares the literature adapter but records no CorpusQuery. "
+                "A corpus is defined by the query that produced it, not by its name — "
+                "record the executable query and ratify it as a 'source_scope' ledger item.")
+        ratified_ids = {i.item_id for i in self.ledger.ratified()}
+        for q in self.source_scope.queries:
+            if q.ledger_item_id not in ratified_ids:
+                raise ValueError(
+                    f"corpus query for '{q.corpus}' traces to ledger item "
+                    f"'{q.ledger_item_id}' which is not ACCEPTED/ACCEPTED_WITH_EDIT. "
+                    f"Which papers are in scope is researcher substance and ratifies like "
+                    f"any other substantive choice.")
         return self

@@ -10,7 +10,11 @@ Tools exposed (one per pipeline responsibility):
   - validate_record     Stage 3/4a  Pydantic-validate an ExtractedRecord's shape.
   - ground_literature   Stage 4b    Deterministic span-grounding: does each value
                                      actually appear (lexically / numerically) in its quote?
+  - build_store         Stage 1     JATS XML -> the offset-anchored store on disk.
+  - locate_spans        Stage 1     Exact CHARACTER offsets for a string in a store.
   - validate_mapping    Stage 4b    Structured-adapter grounding: type/range/enum conformance.
+  - aggregate_ensemble  Stage 3     k extraction passes -> c_ensemble + c_consistency,
+                                     compared under a stated normalization (never by an LLM).
   - score_and_route     Stage 5/6   Composite confidence + per-field + record-level routing.
   - gate_upsert         Stage 7     The HARD write-gate: write iff it clears auto-accept,
                                      no field is quarantined/human_review, source is active.
@@ -41,9 +45,13 @@ if str(_SRC) not in sys.path:
 
 from lit2db.contracts import (  # noqa: E402
     ExtractedRecord, FieldValue, RouteDecision, FailureReason,
-    ConfidenceComponents, default_route, DEFAULT_WEIGHTS,
+    ConfidenceComponents, default_route, DEFAULT_WEIGHTS, required_agreement,
 )
 from lit2db.contracts.spec import SchemaReadySpec  # noqa: E402
+from lit2db.ensemble import DEFAULT_STEPS, summarize  # noqa: E402
+from lit2db.store import (  # noqa: E402
+    build_from_jats, find_spans, quote_at, section_of, write_store,
+)
 from lit2db.gate import gate_reasons, resolve_threshold  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
@@ -141,19 +149,117 @@ def validate_mapping(value: object, field_spec: dict) -> dict:
 
 
 # ------------------------------------------------------------------------------------
+# Stage 1 — the offset-anchored store (the coordinate system every offset refers to)
+# ------------------------------------------------------------------------------------
+@mcp.tool()
+def build_store(xml: str, source_id: str, root_dir: str = "", meta: dict = {}) -> dict:
+    """Parse JATS full-text XML into the Stage-1 offset-anchored store (Stage 1).
+
+    Writes `full.txt`, `sections.json`, and `meta.json` under `<root_dir>/<source_id>/` and
+    returns their paths plus stats. `full.txt` IS the coordinate system: an offset means
+    "index into that exact file" and nothing else, because a source has no intrinsic offsets
+    — a PDF has none, and XML byte positions move on re-serialization.
+
+    Includes title, abstract, body, table cells, figure captions, and `<back>` appendices.
+    **Excludes the reference list** — a bibliography is dense with other papers' claims, so
+    leaving it in would let a value ground against text this paper never asserted.
+
+    Raises rather than emitting an empty store: a silent zero-length store is
+    indistinguishable, three stages later, from a paper that genuinely had nothing in it.
+    """
+    store = build_from_jats(xml, source_id, meta=dict(meta) or None)
+    paths = write_store(store, root_dir or (_PLUGIN_ROOT / "sources"))
+    return {**paths, **store["stats"], "source_id": source_id,
+            "sections": [s["title"] for s in store["sections"]]}
+
+
+@mcp.tool()
+def locate_spans(source_dir: str, needle: str, limit: int = 50) -> dict:
+    """Exact character offsets of `needle` in a store, with each hit's section label.
+
+    **Use this instead of computing an offset yourself.** Grep is the right way to FIND a
+    passage, but `grep -b` reports BYTE offsets while the store's contract is CHARACTER
+    offsets — and every paper in this literature carries non-ASCII (µ, °, –, Greek), so the
+    two diverge silently and by a growing amount through the document. An offset that is
+    wrong still slices *something* out of the file, so the error survives every downstream
+    check and lands in the database as a real-looking quote.
+
+    Returns every occurrence up to `limit`, never just the first: a repeated entity is
+    precisely the case the offset exists to disambiguate.
+    """
+    d = Path(source_dir)
+    text = (d / "full.txt").read_text(encoding="utf-8")
+    sections = json.loads((d / "sections.json").read_text())
+    store = {"full_text": text, "sections": sections}
+    hits = find_spans(text, needle, limit=limit)
+    for h in hits:
+        h["section"] = section_of(store, h["start"])
+        h["quote"] = quote_at(text, h["start"], h["end"])
+    return {"needle": needle, "n": len(hits), "spans": hits,
+            "truncated": len(hits) >= limit}
+
+
+# ------------------------------------------------------------------------------------
+# Stage 3 — ensemble agreement across k extraction passes
+# ------------------------------------------------------------------------------------
+@mcp.tool()
+def aggregate_ensemble(values: list, rel_tol: float = 0.01, expand_binomials: bool = False,
+                       synonyms: dict = {}, normalizers: list = []) -> dict:
+    """Turn k proposed values for ONE field into `c_ensemble` + `c_consistency` (Stage 3).
+
+    Pass the value each of the k independent extraction passes produced, in any order, using
+    null for a pass that found nothing (that is a real outcome and must not be dropped —
+    otherwise a field two passes could not locate looks unanimous).
+
+    This is deterministic on purpose. Whether two passes agree is a comparison under a stated
+    normalization, not a judgement, so it does not belong to an agent: an LLM asked "do these
+    agree?" would give a different answer on different days, and the routing bar built on top
+    of it would mean nothing.
+
+    Comparison is numeric (within `rel_tol`) when both sides are scalar measurements, and
+    string-based under unicode/confusable/whitespace/case normalization otherwise — so
+    `4.2` == `4.20`, `"4.2 uM"` == `"4.2 µM"`, but `2-MIB` != `2-methylisoborneol`.
+    Domain knowledge is yours to supply: `synonyms` comes from the ratified instantiation's
+    controlled vocabulary, and `expand_binomials` opts into abbreviated-genus matching.
+
+    Returns `modal_value: null` with `ambiguous_modal: true` on a tie — there is no consensus
+    value at k=2 split, or 2-2 at k=4, and nothing downstream should be handed one.
+    """
+    return summarize(list(values), rel_tol=rel_tol, expand_binomials=expand_binomials,
+                     synonyms=dict(synonyms) or None,
+                     steps=tuple(normalizers) if normalizers else DEFAULT_STEPS)
+
+
+# ------------------------------------------------------------------------------------
 # Stage 5/6 — composite confidence + routing
 # ------------------------------------------------------------------------------------
 @mcp.tool()
-def score_and_route(record: dict, weights_key: str = "numeric") -> dict:
+def score_and_route(record: dict, weights_key: str = "numeric",
+                    ensemble_k: int = 0, ensemble_min_agreeing: int = 0) -> dict:
     """Composite confidence per field (blueprint 5.2) + per-field and record-level routing.
 
     Each field's confidence_components are combined with the ratified weight vector over
     PRESENT signals only (graceful degradation). Fields route via default_route; a record
     with ANY unparseable/mapping-invalid field, or no fields, is QUARANTINED (record-level
     dead-letter, distinct from field-level human_review). Returns the annotated record +
-    a composite record confidence (min over fields = weakest-link)."""
+    a composite record confidence (min over fields = weakest-link).
+
+    `ensemble_k` / `ensemble_min_agreeing` set the agreement bar as "how many of how many
+    passes must agree" — the units the signal can actually take, since `c_ensemble` is
+    quantized to j/k. Leave both 0 for the shipped default (unanimity at k=3). Setting them
+    is a ratified per-project decision: it is the researcher's tolerance for extraction
+    disagreement, not a tuning constant the scaffold owns.
+
+    Set `ensemble_k` alone to change ensemble size while KEEPING unanimity — the policy
+    follows k rather than pinning an integer that would quietly become a majority. k must be
+    >= 2; k=1 is refused because a single pass agrees with itself and would assert agreement
+    nobody measured."""
     rec = ExtractedRecord.model_validate(record)
     weights = DEFAULT_WEIGHTS.get(weights_key, DEFAULT_WEIGHTS["numeric"])
+    # ensemble_min_agreeing=0 means "unset" -> unanimity at whatever k is, so raising k
+    # tightens the bar instead of silently loosening it to a majority.
+    min_agreement = (required_agreement(ensemble_k, ensemble_min_agreeing or None)
+                     if ensemble_k else 1.0)
     field_confs = []
     for fv in rec.fields:
         c = fv.confidence_components
@@ -162,7 +268,7 @@ def score_and_route(record: dict, weights_key: str = "numeric") -> dict:
                 fv.confidence = c.composite(weights)
             except ValueError:
                 fv.confidence = None
-        fv.route = default_route(fv)
+        fv.route = default_route(fv, min_agreement)
         field_confs.append(fv.confidence if fv.confidence is not None else 0.0)
 
     # record-level quarantine: no fields, or any field with zero grounding AND no signals

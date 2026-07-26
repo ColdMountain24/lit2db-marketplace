@@ -47,6 +47,13 @@ Every database question must resolve all ten. Walk them in the interview (Steps 
 7. **Negative-data policy** — driven by the ML task; classification needs negatives.
 8. **Inclusion / exclusion criteria** — versioned, reproducible.
 9. **Source scope** — literature adapter, structured adapter, or both; pinned DB versions.
+   For the literature adapter this means the **executable query**, recorded verbatim, not a
+   description of it. A corpus is defined by the query that produced it: term forms, field
+   scoping, and date bounds all move the boundary silently, and "papers about X since 2020"
+   is an intent, not a definition. Propose the query as a `source_scope` ledger item with its
+   result counts, walk the researcher through what it includes and excludes, and let them
+   ratify it — **which papers are in scope is substance, not structure.** `SchemaReadySpec`
+   refuses to freeze a literature spec whose query is missing or unratified.
 10. **Provenance granularity** — what distinguishes two records (the unit-of-analysis tuple).
 
 ## The ratification ledger

@@ -4,9 +4,10 @@ from .provenance import (
 )
 from .spec import (
     MLTask, RatificationStatus, LedgerItem, RatificationLedger,
-    FieldSpec, SourceScope, SchemaReadySpec,
+    FieldSpec, CorpusQuery, SourceScope, SchemaReadySpec,
 )
 from .routing import (
     RouteDecision, FailureReason, FieldValue, ExtractedRecord,
-    DEFAULT_WEIGHTS, default_route,
+    DEFAULT_WEIGHTS, default_route, required_agreement,
+    DEFAULT_ENSEMBLE_K, DEFAULT_MIN_AGREEING,
 )
