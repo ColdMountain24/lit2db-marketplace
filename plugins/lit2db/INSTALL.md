@@ -69,14 +69,29 @@ Restart the session if prompted so the MCP server and hooks load.
 /help
 ```
 
-You should see the three lit2db commands listed:
+You should see the four lit2db commands listed:
 
 - `/lit2db-new-project` — run the Stage-0.5 scope-elicitation interview
+- `/lit2db-extract` — one source end-to-end: store → k passes → merge → verify → route → gate
 - `/lit2db-verify` — run the verify/route/gate spine over records
-- `/lit2db-status` — report ledger / DB / verification state
+- `/lit2db-status` — selfcheck the loaded plugin, then report the ML-ready view
 
-And the MCP tools (`validate_record`, `ground_literature`, `validate_mapping`,
-`score_and_route`, `gate_upsert`, `db_query`) should be available to the agent.
+**Then confirm you got all 13 MCP tools**, not a stale subset:
+
+```
+/lit2db-status
+```
+
+It runs `scripts/selfcheck.py` against `${CLAUDE_PLUGIN_ROOT}` — the copy the session actually
+launched — and stops loudly if the tools it declares aren't the tools you hold. The spine is
+`validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`,
+`db_query`; Stage 1 adds `build_store`, `locate_spans`; Stage 3 adds `merge_extraction_passes`,
+`aggregate_ensemble`; and three reach the network and fail closed — `check_retraction`,
+`resolve_access`, `rank_manual_queue`.
+
+**If you see only 6, the plugin did not reload.** That is a real bug we hit: a stale marketplace
+clone served v0.1.0 against a v0.9.0 repo for two sessions with no error anywhere. Fix with
+`/plugin marketplace update`, reinstall, then `/reload-plugins`.
 
 ---
 
@@ -119,8 +134,18 @@ python3 -m pip install "pytest>=7"
 python3 -m pytest -q
 ```
 
-Expect `9 passed`. Two suites: `test_smoke.py` (the ratification-ledger invariant + the
-write-gate hook) and `test_spine.py` (the demo thesis encoded as assertions).
+Expect `208 passed, 1 skipped` (the skip is a network test; `LIT2DB_NETWORK_TESTS=1` runs it).
+
+The two worth naming to a skeptic are `test_smoke.py` — the ratification-ledger invariant, i.e.
+an agent provably cannot slip an unratified field into a frozen schema — and `test_spine.py`,
+which is the demo thesis above encoded as assertions. If either stops reproducing the
+"grounded ≠ accepted" contrast, the thesis is broken, not just a test.
+
+The rest pin the parts that have actually bitten us: `test_write_gate` (both enforcement points,
+one predicate), `test_retraction` (fail-closed source status), `test_store` (the offset
+contract), `test_ensemble` + `test_merge_passes` (agreement, and cross-pass alignment on the
+ratified identity field), `test_retained_source` (a quote may not cite text the extractor never
+read), and `test_selfcheck` (the stale-install bug above).
 
 ---
 
