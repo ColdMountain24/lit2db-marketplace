@@ -18,6 +18,5 @@
     "scientific-databases"
   ],
   "license": "MIT",
-  "mcpServers": "./mcp-config.json",
-  "hooks": "./hooks/hooks.json"
+  "mcpServers": "./mcp-config.json"
 }
