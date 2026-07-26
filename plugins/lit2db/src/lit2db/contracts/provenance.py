@@ -5,10 +5,30 @@ and 4 step 6 (evidence-tier ordinal). Domain-INVARIANT: no field here encodes do
 substance. Every value in the output database carries a ProvenanceRecord.
 """
 from __future__ import annotations
+import hashlib
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional, Union
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def process_fingerprint(template: str) -> str:
+    """SHA256 of the exact text that produced a value — a prompt template, or a mapping spec.
+
+    Computed from the template at load, never written by hand. Because the digest derives from
+    the text itself, **the prompt cannot change without the fingerprint changing** — which is the
+    whole point, and is why `_ProvCommon.process_fingerprint` refuses anything that is not a real
+    SHA256 rather than trusting a version string somebody remembered to bump.
+
+    This is D-033's rule one level up. A corpus is defined by its query, not its name; an
+    extraction is defined by its prompt, not by `"extractor@0.9.0"`. Two runs whose
+    `producing_process` strings match can still have used different instructions, and today
+    nothing in the record would show it. Ported from RAW's constraints #11/#12.
+    """
+    return hashlib.sha256(template.encode("utf-8")).hexdigest()
 
 
 # --- Source status (ratified addition D2: retraction / supersession) --------------
@@ -71,10 +91,34 @@ class _ProvCommon(BaseModel):
     source_id: str
     retrieval_timestamp: datetime
     producing_process: str            # extracting model+version, or mapping-spec+version
+    # SHA256 of the prompt template (literature) or mapping spec (structured) — see
+    # `process_fingerprint`. `producing_process` above is a NAME and names drift silently;
+    # this is the executable thing itself. Optional so existing records stay valid, but a
+    # value that is present must be a real digest: hand-bumping is refused structurally.
+    process_fingerprint: Optional[str] = None
     source_status: SourceStatus = SourceStatus.active
     source_status_checked_at: Optional[datetime] = None
     confidence: Optional[float] = None
     confidence_components: Optional[ConfidenceComponents] = None
+
+    @field_validator("process_fingerprint")
+    @classmethod
+    def _must_be_a_real_digest(cls, v):
+        """Reject `"v2"`, `"prompt-1.3"`, or a truncated hash.
+
+        The field only means anything if it was computed. Accepting a hand-written label would
+        reproduce exactly the defect it exists to remove — a provenance string that looks
+        precise, is trusted, and can be updated without the thing it describes changing.
+        """
+        if v is None:
+            return v
+        v = v.strip().lower()
+        if not _SHA256.match(v):
+            raise ValueError(
+                f"process_fingerprint must be a SHA256 hex digest computed from the prompt "
+                f"template (see process_fingerprint()), got {v[:24]!r}. A hand-written version "
+                "label is the thing this field exists to replace.")
+        return v
 
 
 class LiteratureProvenance(_ProvCommon):
