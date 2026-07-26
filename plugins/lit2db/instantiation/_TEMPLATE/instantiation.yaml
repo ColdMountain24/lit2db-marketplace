@@ -13,8 +13,33 @@ research_question: "<researcher's own words — RATIFIED>"
 ml_task: "<classification | regression | generative | knowledge_graph>"   # Step A, drives everything
 unit_of_analysis: "<one row = one (…) — RATIFIED tuple>"                  # Step B
 
-# fields[] — each MUST carry ledger_item_id of an ACCEPTED / ACCEPTED_WITH_EDIT item
-fields: []          # e.g. see instantiation/example_enzyme_kinetics/ (worked example, protocol section 7)
+# fields[] — each MUST carry ledger_item_id of an ACCEPTED / ACCEPTED_WITH_EDIT item below.
+# Shape is FieldSpec (src/lit2db/contracts/spec.py). Placeholders only: the substance is yours,
+# and it arrives through the interview, never by hand-editing this list.
+#   - name: "<schema_field_name>"
+#     type: "<float | int | str | bool | enum>"
+#     unit: null                   # the unit the value is normalized to, if it is dimensional
+#     enum: null                   # [...] iff type is enum — from a vocabulary you RATIFIED
+#     valid_range: null            # [lo, hi] iff numeric. Out-of-range is FLAGGED, never dropped
+#     definition: "<your own words: what exactly counts as this value>"
+#     provenance_granularity: "<what makes two records of this field distinct — Step C axis 10>"
+#     ledger_item_id: "F1"         # MUST be ACCEPTED / ACCEPTED_WITH_EDIT in the ledger below
+fields: []
+
+# --- Ratification ledger (protocol section 4). The frozen schema IS this list, filtered to the
+# ratified items — `SchemaReadySpec` refuses any field tracing to anything else. The agent
+# proposes every item; only YOU set `status`. A perfectly reasonable unratified item is still
+# not in the schema: that refusal is the whole point.
+ledger:
+  items: []
+#   - item_id: "F1"
+#     kind: "<field | axis_setting | vocab_binding | structural_alt | inclusion_criterion | source_scope | threshold_constant>"
+#     summary: "<one line: what is being proposed>"
+#     proposed_by: agent           # always the agent — it originates structure, never substance
+#     status: PROPOSED             # PROPOSED -> ACCEPTED | ACCEPTED_WITH_EDIT | REJECTED (yours alone)
+#     edit_note: null              # REQUIRED iff ACCEPTED_WITH_EDIT — what you changed and why
+#     reject_reason: null          # logged so the agent does not re-propose it
+#     payload: {}                  # the structured content of the item
 
 controlled_vocab_bindings: {}     # existing vocabularies the researcher RATIFIED (Step D)
 inclusion_exclusion: {}           # versioned (Step C axis 8)
@@ -35,7 +60,11 @@ confidence_weights:               # override the illustrative DEFAULT_WEIGHTS af
   numeric: {}
   inferential: {}
 routing:
-  auto_accept_threshold: 0.95     # blueprint 8 gate 2 default; recalibrate on gold set
+  # CONSERVATIVE PLACEHOLDER — you are expected to change this. It is set high so that an
+  # uncalibrated project auto-accepts too little (everything queues for review) rather than
+  # too much. Calibrate against your gold set: a real calibrated value can land near 0.7,
+  # where 0.95 would auto-accept almost nothing. Blueprint 8, gate 2.
+  auto_accept_threshold: 0.95
   borderline_margin: null         # width of the borderline-cutoff lane (blueprint 6)
 cost_cap_ratio: 3.0               # x gold-set cost (blueprint Stage 0)
 

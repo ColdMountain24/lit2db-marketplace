@@ -1,7 +1,8 @@
-"""Smoke test: contracts import, the idea-generation boundary holds, the composite
-degrades gracefully, and the write-gate hook denies. Run: pytest -q (from plugins/lit2db/).
+"""Smoke test: contracts import, the idea-generation boundary holds, and the composite
+degrades gracefully. The write-gate has its own suite (test_write_gate.py); the spine's
+verify/route/gate thesis is in test_spine.py. Run: pytest -q (from plugins/lit2db/).
 """
-import json, subprocess, sys, os
+import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from lit2db.contracts import (
@@ -46,11 +47,3 @@ def test_composite_degrades_without_logprob():
                               c_judge=0.9, c_consistency=0.85)  # no c_logprob
     v = cc.composite(DEFAULT_WEIGHTS["numeric"])
     assert 0.0 <= v <= 1.0
-
-
-def test_write_gate_hook_denies_low_confidence():
-    hook = os.path.join(os.path.dirname(__file__), "..", "hooks", "pretooluse_write_gate.py")
-    payload = json.dumps({"tool_name": "db_upsert",
-        "tool_input": {"record": {"confidence": 0.5, "fields": []}}})
-    out = subprocess.run([sys.executable, hook], input=payload, capture_output=True, text=True)
-    assert '"deny"' in out.stdout

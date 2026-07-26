@@ -43,7 +43,23 @@ Local development:
 | **MCP server** (`mcp/`) | The verify/route/gate spine as callable tools — `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`. Self-contained (SQLite); no external services. |
 | **Skill** (`skills/scope-elicitation/`) | The Stage-0.5 protocol: ten narrowing axes, the ratification ledger, the propose-structure / ratify-substance boundary. |
 | **Commands** (`commands/`) | `/lit2db-new-project`, `/lit2db-verify`, `/lit2db-status`. |
-| **Contracts** (`src/lit2db/`) | Pydantic formalization of the ledger invariant, provenance record, evidence tier, confidence composite, and routing. **Domain-blind.** |
+| **Contracts** (`src/lit2db/contracts/`, `gate.py`) | Pydantic formalization of the ledger invariant, provenance record, evidence tier, confidence composite, and routing, plus the write-gate predicate the hook and the MCP tool both apply. **Domain-blind.** |
+| **Scaffolding** (`src/lit2db/{stages,adapters,tools}/`) | Deliberate stubs — see below. |
+
+### What is real, and what is scaffolding
+
+Everything in the table above is implemented and exercised by the demo and the test suite,
+**except** three subpackages that ship as intentional, typed scaffolding:
+
+| Package | Ships | Does not ship |
+|---|---|---|
+| `src/lit2db/stages/` | The nine-stage control flow as named, typed functions; `stage_6_route` is real. | The other stage bodies (`...`). Orchestration currently lives in the agents and commands. |
+| `src/lit2db/adapters/` | The `SourceAdapter` ABC — discover / acquire / emit / check_status — and the literature + structured subclasses that declare their downstream path. | The method bodies, which need network services (OpenAlex, Unpaywall, GROBID, Crossref). |
+| `src/lit2db/tools/` | Correct signatures and contracts for the in-process tools (`grobid_parse`, `check_retraction`, `extract_record`, `nli_entails`, `resolve_entity`, `db_upsert`, …). | The bodies, each raising `NotImplementedError` naming the service to wire. |
+
+They are kept rather than deleted because the contract *is* the design: the adapter interface
+and the stage boundaries are what make the scaffold domain-invariant, and they are what the
+self-updating-database work builds on. Nothing in the demo path depends on them.
 
 ## The two-layer architecture
 
@@ -78,6 +94,17 @@ Three records go through the spine:
 
 Only A lands in the ML-ready view. B and C never silently enter the database. That contrast —
 high surface grounding, gated by a stricter judge — is the whole thesis in one run.
+
+## Calibrate before you trust the gate
+
+The shipped `auto_accept_threshold: 0.95` is a **conservative placeholder, not a
+recommendation.** It is set high so an uncalibrated project fails toward auto-accepting too
+little — everything queues for human review — rather than toward letting unverified values
+into the ML-ready view. Calibrate it against your own gold set; a genuinely calibrated value
+can land near 0.7, where 0.95 would auto-accept almost nothing. Set it in your project's
+`instantiation/<project>/instantiation.yaml` under `routing.auto_accept_threshold`, or
+override it per run with `LIT2DB_AUTOACCEPT`. No domain-calibrated number is baked into the
+scaffold — that is the point of the two-layer split.
 
 ## Instantiate for your own domain
 

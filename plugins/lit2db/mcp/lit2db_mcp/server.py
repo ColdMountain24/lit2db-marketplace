@@ -43,13 +43,16 @@ from lit2db.contracts import (  # noqa: E402
     ConfidenceComponents, default_route, DEFAULT_WEIGHTS,
 )
 from lit2db.contracts.spec import SchemaReadySpec  # noqa: E402
+from lit2db.gate import gate_reasons, resolve_threshold  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 mcp = FastMCP("lit2db")
 
 # --- Config, resolved from the active instantiation (env-overridable) ----------------
-AUTOACCEPT = float(os.environ.get("LIT2DB_AUTOACCEPT", "0.95"))
+# Falls back to lit2db.gate.DEFAULT_AUTOACCEPT (0.95), a conservative PLACEHOLDER — a real
+# project overrides it from its calibrated `routing.auto_accept_threshold`. See gate.py.
+AUTOACCEPT = resolve_threshold(env=os.environ)
 DB_PATH = os.environ.get("LIT2DB_DB_PATH", str(_PLUGIN_ROOT / "examples" / "demo.db"))
 
 
@@ -199,19 +202,13 @@ def gate_upsert(record: dict, composite_confidence: float,
       (3) every field's source_status is 'active'.
     'deny' wins. A denied record is NOT written; its reasons are returned for routing to the
     human-review or quarantine queue. This is the deterministic gate that makes the ratified
-    quality bar mechanical rather than advisory."""
+    quality bar mechanical rather than advisory.
+
+    The conditions themselves live in `lit2db.gate` — the same predicate the PreToolUse hook
+    applies, so the two enforcement points cannot drift apart."""
     thr = autoaccept if autoaccept >= 0 else AUTOACCEPT
-    rec = ExtractedRecord.model_validate(record)
-    reasons = []
-    if composite_confidence < thr:
-        reasons.append(f"composite {composite_confidence:.3f} < auto-accept {thr}")
-    for fv in rec.fields:
-        if fv.route in (RouteDecision.quarantine, RouteDecision.human_review):
-            reasons.append(f"field '{fv.field_name}' routed {fv.route.value}")
-        st = getattr(fv.provenance, "source_status", None)
-        st = st.value if hasattr(st, "value") else st
-        if st and st != "active":
-            reasons.append(f"field '{fv.field_name}' source_status={st}")
+    rec = ExtractedRecord.model_validate(record)  # shape first: an unparseable record cannot be gated
+    reasons = gate_reasons(json.loads(rec.model_dump_json()), composite_confidence, thr)
     if reasons:
         return {"written": False, "decision": "deny", "reasons": reasons,
                 "route_to": "human_review_or_quarantine_queue"}

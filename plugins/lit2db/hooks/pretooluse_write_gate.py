@@ -1,47 +1,69 @@
 #!/usr/bin/env python3
-"""PreToolUse hook on db_upsert: the HARD write-gate (blueprint 7.3).
+"""PreToolUse hook — the HARD write-gate at the permission layer (blueprint 7.3).
 
-Deny the write if the record's composite confidence is below the auto-accept threshold,
-OR if any field routes to quarantine/human_review, OR if source_status is not active.
-"deny" wins in the Claude Code permission pipeline -- this is the deterministic gate that
-wraps the non-deterministic extractor.
+"deny" wins the Claude Code permission pipeline, so this hook stops a sub-threshold write
+*before the tool runs at all*. It fires on the tool the MCP server actually exposes —
+which reaches hooks namespaced as `mcp__<server>__gate_upsert` — as well as on the
+in-process `db_upsert` stub.
+
+The identical predicate runs again inside `gate_upsert` itself: one implementation
+(`lit2db.gate`), two enforcement points. See that module for why both exist.
+
+An `allow` here is deliberate, not an oversight: a record that clears the ratified
+auto-accept bar is written mechanically, without asking a human per row — that is what
+auto-accept means. Everything else is denied and routed to the human-review / quarantine
+queue, with the reasons attached.
 
 Reads the Claude Code hook JSON on stdin; emits a permission decision on stdout.
-Threshold is read from the active instantiation config (env LIT2DB_AUTOACCEPT, default 0.95).
+Threshold precedence: the call's `autoaccept` arg > env LIT2DB_AUTOACCEPT > 0.95.
+Fails CLOSED — an unparseable payload, or a gate module that will not import, denies.
 """
-import json, os, sys
+import json
+import os
+import sys
+from pathlib import Path
 
-AUTOACCEPT = float(os.environ.get("LIT2DB_AUTOACCEPT", "0.95"))
 
-def main():
+def emit(decision: str, reason: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": decision,
+        "permissionDecisionReason": f"write-gate: {reason}"}}))
+
+
+# The hook's own location is the authoritative plugin root: a wrong CLAUDE_PLUGIN_ROOT must
+# not be able to disable the gate. A failed import denies rather than falling open — a
+# non-blocking exit code would let the write through, which is the failure mode being fixed.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+try:
+    from lit2db.gate import gate_reasons, is_write_tool, resolve_composite, resolve_threshold
+except Exception as exc:  # pragma: no cover - exercised only on a broken install
+    emit("deny", f"gate module unavailable ({exc})")
+    sys.exit(0)
+
+
+def main() -> None:
     try:
         event = json.load(sys.stdin)
     except Exception:
-        # fail closed: if we cannot parse, do not allow the write
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-              "permissionDecision": "deny",
-              "permissionDecisionReason": "write-gate: unparseable hook payload"}}))
+        emit("deny", "unparseable hook payload")
         return
-    if event.get("tool_name") != "db_upsert":
-        return  # not our tool; stay silent (allow)
-    rec = event.get("tool_input", {}).get("record", {})
-    reasons = []
-    conf = rec.get("confidence")
-    if conf is None or conf < AUTOACCEPT:
-        reasons.append(f"composite confidence {conf} < auto-accept {AUTOACCEPT}")
-    for fv in rec.get("fields", []):
-        if fv.get("route") in ("quarantine", "human_review"):
-            reasons.append(f"field '{fv.get('field_name')}' routed to {fv.get('route')}")
-    for fv in rec.get("fields", []):
-        prov = fv.get("provenance", {})
-        if prov.get("source_status", "active") != "active":
-            reasons.append(f"source_status={prov.get('source_status')} (not active)")
-            break
-    decision = "deny" if reasons else "allow"
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-          "permissionDecision": decision,
-          "permissionDecisionReason": "write-gate: " + ("; ".join(reasons) if reasons
-                                        else "passes auto-accept")}}))
+    if not isinstance(event, dict) or not is_write_tool(event.get("tool_name")):
+        return  # not a write tool; stay silent and leave the permission flow alone
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        emit("deny", "write call carried no arguments")
+        return
+    reasons = gate_reasons(
+        tool_input.get("record"),
+        resolve_composite(tool_input),
+        resolve_threshold(tool_input, os.environ),
+    )
+    if reasons:
+        emit("deny", "; ".join(reasons))
+    else:
+        emit("allow", "passes auto-accept")
+
 
 if __name__ == "__main__":
     main()

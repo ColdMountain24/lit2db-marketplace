@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "gate_upsert|db_upsert",
+        "matcher": "(mcp__.*__)?(gate_upsert|db_upsert)",
         "hooks": [
           {
             "type": "command",
