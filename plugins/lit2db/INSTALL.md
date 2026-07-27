@@ -134,7 +134,7 @@ python3 -m pip install "pytest>=7"
 python3 -m pytest -q
 ```
 
-Expect `319 passed, 1 skipped` (the skip is a network test; `LIT2DB_NETWORK_TESTS=1` runs it).
+Expect `330 passed, 1 skipped` (the skip is a network test; `LIT2DB_NETWORK_TESTS=1` runs it).
 
 The two worth naming to a skeptic are `test_smoke.py` — the ratification-ledger invariant, i.e.
 an agent provably cannot slip an unratified field into a frozen schema — and `test_spine.py`,
@@ -177,7 +177,7 @@ same verify → route → gate spine you just watched in the demo.
 ## What's real vs. what's stubbed (be honest with the room)
 
 - **Real today:** install path, all 13 MCP tools, the 3 hooks, the deterministic verify→route→gate
-  spine, the offline demo, the 319 tests, the elicitation interview.
+  spine, the offline demo, the 330 tests, the elicitation interview.
 - **Supplied by the orchestrator at runtime:** the *adversarial judge* verdict. The
   MCP server ships a naive lexical/numeric grounding baseline so it's self-contained and testable;
   the strict judge that produced the 39%-flagged pilot result runs in Claude Code itself and feeds
