@@ -301,7 +301,8 @@ def aggregate_ensemble(values: list, rel_tol: float = 0.01, expand_binomials: bo
 # ------------------------------------------------------------------------------------
 @mcp.tool()
 def score_and_route(record: dict, weights_key: str = "numeric",
-                    ensemble_k: int = 0, ensemble_min_agreeing: int = 0) -> dict:
+                    ensemble_k: int = 0, ensemble_min_agreeing: int = 0,
+                    review_lane: list | None = None) -> dict:
     """Composite confidence per field (blueprint 5.2) + per-field and record-level routing.
 
     Each field's confidence_components are combined with the ratified weight vector over
@@ -326,6 +327,7 @@ def score_and_route(record: dict, weights_key: str = "numeric",
     # tightens the bar instead of silently loosening it to a majority.
     min_agreement = (required_agreement(ensemble_k, ensemble_min_agreeing or None)
                      if ensemble_k else 1.0)
+    lane = set(review_lane or ())
     field_confs = []
     for fv in rec.fields:
         c = fv.confidence_components
@@ -335,7 +337,13 @@ def score_and_route(record: dict, weights_key: str = "numeric",
             except ValueError:
                 fv.confidence = None
         fv.route = default_route(fv, min_agreement)
-        field_confs.append(fv.confidence if fv.confidence is not None else 0.0)
+        # A ratified review-lane field is scored and routed like any other — its confidence
+        # stays visible — but it is EXCLUDED from the record composite, because the composite
+        # is the weakest link among the fields the record will actually be written with. A
+        # field the researcher has already ruled can never auto-accept is not one of those,
+        # and including it makes the record's score a measure of the field we agreed to hold.
+        if fv.field_name not in lane:
+            field_confs.append(fv.confidence if fv.confidence is not None else 0.0)
 
     # record-level quarantine: no fields, or any field with zero grounding AND no signals
     if not rec.fields:
@@ -344,6 +352,7 @@ def score_and_route(record: dict, weights_key: str = "numeric",
     composite = min(field_confs) if field_confs else 0.0
     out = json.loads(rec.model_dump_json())
     out["_composite_confidence"] = composite
+    out["_review_lane"] = sorted(lane & {fv.field_name for fv in rec.fields})
     out["_routing_summary"] = {
         r.value: sum(1 for fv in rec.fields if fv.route == r) for r in RouteDecision
     }
@@ -369,7 +378,8 @@ def _conn(db_path: str | None = None) -> sqlite3.Connection:
 @mcp.tool()
 def gate_upsert(record: dict, composite_confidence: float,
                 db_path: str = "", autoaccept: float = -1.0,
-                require_contradiction_search: bool = False) -> dict:
+                require_contradiction_search: bool = False,
+                review_lane: list | None = None) -> dict:
     """The HARD write-gate (Stage 7). Writes to the DB IFF ALL hold:
       (1) composite_confidence >= auto-accept threshold,
       (2) no field routes to quarantine or human_review,
@@ -386,18 +396,34 @@ def gate_upsert(record: dict, composite_confidence: float,
     applies, so the two enforcement points cannot drift apart."""
     thr = autoaccept if autoaccept >= 0 else AUTOACCEPT
     rec = ExtractedRecord.model_validate(record)  # shape first: an unparseable record cannot be gated
+    lane = set(review_lane or [])
     reasons = gate_reasons(json.loads(rec.model_dump_json()), composite_confidence, thr,
-                           require_contradiction_search=require_contradiction_search)
+                           require_contradiction_search=require_contradiction_search,
+                           review_lane=lane)
     if reasons:
         return {"written": False, "decision": "deny", "reasons": reasons,
                 "route_to": "human_review_or_quarantine_queue"}
+
+    # A ratified review-lane field is HELD, not written. Stripping it here is what makes the
+    # exemption in `gate_reasons` safe: the field stops blocking the row precisely because it
+    # is not part of the row. Writing it while exempting it from the checks would be the worst
+    # of both — unverified prose in the database, under a passing gate.
+    held = [fv for fv in rec.fields if fv.field_name in lane]
+    if held:
+        rec = rec.model_copy(update={"fields": [fv for fv in rec.fields
+                                                if fv.field_name not in lane]})
+        if not rec.fields:
+            return {"written": False, "decision": "deny",
+                    "reasons": ["every field is in the review lane — nothing left to write"],
+                    "route_to": "human_review_or_quarantine_queue"}
     con = _conn(db_path or None)
     src_status = "active"
     con.execute("INSERT OR REPLACE INTO records VALUES (?,?,?,?,?,?,?)",
                 (rec.record_id, rec.entity_type, composite_confidence, "auto_accept",
                  src_status, rec.model_dump_json(), datetime.now(timezone.utc).isoformat()))
     con.commit(); con.close()
-    return {"written": True, "decision": "allow", "record_id": rec.record_id}
+    return {"written": True, "decision": "allow", "record_id": rec.record_id,
+            "held_for_review": [fv.field_name for fv in held]}
 
 
 # ------------------------------------------------------------------------------------

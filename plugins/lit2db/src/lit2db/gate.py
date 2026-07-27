@@ -107,7 +107,7 @@ def resolve_threshold(tool_input=None, env=None, default: float = DEFAULT_AUTOAC
 
 
 def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
-                 require_contradiction_search: bool = False):
+                 require_contradiction_search: bool = False, review_lane=()):
     """Every reason this record must NOT be written. An empty list means the write passes.
 
     The ratified conditions, all of which must hold:
@@ -150,11 +150,22 @@ def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOA
         reasons.append("record carries no fields")
         return reasons
 
+    lane = set(review_lane or ())
     for i, fv in enumerate(fields):
         if not isinstance(fv, dict):
             reasons.append(f"field #{i} is not an object")
             continue
         name = fv.get("field_name") or f"#{i}"
+        if name in lane:
+            # A ratified review-lane field is one the researcher has already decided can never
+            # be auto-accepted — free prose, typically. It is HELD OUT of the write rather than
+            # blocking it, so it cannot block a row it is not part of. Letting it block was
+            # measured to deny records whose other eight fields all scored 1.000 with unanimous
+            # agreement: a field designed never to pass was vetoing every row it appeared in,
+            # and the pilot's auto-accept rate would have been zero by construction rather
+            # than by evidence. `gate_upsert` must strip these before writing — the guarantee
+            # here is "not written", never "written unchecked".
+            continue
         route = _enum_value(fv.get("route"))
         if route in BLOCKING_ROUTES:
             reasons.append(f"field '{name}' routed {route}")

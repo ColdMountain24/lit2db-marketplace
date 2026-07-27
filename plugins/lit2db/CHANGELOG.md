@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.22.0 — 2026-07-27
+A ratified review-lane field is held, not written — and stops vetoing the row (D-064).
+
+- `score_and_route` and `gate_upsert` take `review_lane`. Those fields are excluded from the
+  record composite, **stripped before the write**, and returned as `held_for_review`.
+- Measured: a record scored 0.385 because one free-prose field ratified to human review scored
+  0.385, while its other nine fields scored 0.923-1.000 with three readings unanimous on eight.
+  Auto-accept would have been zero by construction rather than by evidence.
+- The exemption is only safe because of the strip: exempting without stripping would write
+  unverified prose under a passing gate. Both halves are pinned by one test file.
+- A record entirely in the review lane is denied, not written empty. The lane excuses nothing
+  else — a retracted source or a contradiction elsewhere still denies.
+- 371 → 380 tests.
+
 ## 0.21.0 — 2026-07-27
 The headless wave driver, plus three defects the first real run exposed.
 

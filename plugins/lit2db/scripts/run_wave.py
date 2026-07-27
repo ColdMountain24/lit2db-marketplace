@@ -430,11 +430,13 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     scored, written = [], 0
     for r in records:
         sr = srv.score_and_route(record=r, weights_key=cfg.get("weights_key", "numeric"),
-                                 ensemble_k=len(cfg["models"]), ensemble_min_agreeing=0)
+                                 ensemble_k=len(cfg["models"]), ensemble_min_agreeing=0,
+                                 review_lane=cfg.get("review_lane", []))
         comp = sr.get("_composite_confidence") or 0.0
         g = srv.gate_upsert(record=sr, composite_confidence=comp, db_path=cfg["db_path"],
                             autoaccept=cfg["auto_accept_threshold"],
-                            require_contradiction_search=True)
+                            require_contradiction_search=True,
+                            review_lane=cfg.get("review_lane", []))
         written += bool(g.get("written"))
         scored.append({"record": sr, "composite": comp, "gate": g})
 
