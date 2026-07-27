@@ -122,3 +122,38 @@ def test_explain_says_which_field_to_interrogate_first():
 def test_an_empty_run_does_not_divide_by_zero():
     p = project([])
     assert p["n_records"] == 0 and p["yield_fraction"] == 0.0
+
+
+def test_an_absent_optional_field_does_not_block():
+    """Found by running the pipeline on a real paper: a record was blocked by the ABSENCE of a
+    field the spec itself calls optional. That is not the gate working, it is the gate misreading
+    the schema. `accession` is null whenever a paper states no database identifier — common and
+    expected, and the ratified identity rule already falls back to (organism + name)."""
+    absent = {"field_name": "accession", "value": None,
+              "confidence_components": {"c_grounded": 0.0, "c_ensemble": 1.0}}
+    r = rec("r1", fv("enzyme_name"), absent)
+    assert project([r])["n_auto_accept"] == 0                        # blocked
+    p = project([r], optional={"accession"})
+    assert p["n_auto_accept"] == 1                                   # excused
+    assert dict(p["optional_absent"])["accession"] == 1
+
+
+def test_an_optional_field_that_IS_present_still_has_to_clear():
+    """Optional means 'may be absent', never 'exempt from verification'."""
+    weak = {"field_name": "accession", "value": "WP_123",
+            "confidence_components": {"c_grounded": 0.4, "c_ensemble": 1.0}}
+    p = project([rec("r1", fv("enzyme_name"), weak)], optional={"accession"})
+    assert p["n_auto_accept"] == 0
+    assert dict(p["blocking_fields"])["accession"] == 1
+
+
+def test_optional_fields_are_read_from_the_ratified_spec():
+    from lit2db.yield_projection import optional_fields_from_spec
+    assert optional_fields_from_spec({"fields": [
+        {"name": "accession", "required": False}, {"name": "enzyme_name"}]}) == {"accession"}
+
+
+def test_fields_are_required_by_default():
+    f = FieldSpec(name="x", type="str", definition="d",
+                  provenance_granularity="p", ledger_item_id="L1")
+    assert f.required is True

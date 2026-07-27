@@ -83,6 +83,13 @@ class FieldSpec(BaseModel):
     # is excluded from the auto-accept condition rather than counted as a failure — otherwise
     # every record carrying one is blocked and the yield reads as a broken pipeline.
     auto_acceptable: bool = True
+    # Whether the field must be PRESENT for a record to auto-accept. An optional field that is
+    # legitimately absent must not block: `accession` is null whenever a paper states no database
+    # identifier, which is common and expected, and the ratified identity rule already falls back
+    # to (source_organism + enzyme_name) for exactly that case. Found by running the pipeline on a
+    # real paper — a record was blocked by the ABSENCE of a field the spec calls optional.
+    # An optional field that IS present still has to clear the bar like any other.
+    required: bool = True
 
 
 class CorpusQuery(BaseModel):

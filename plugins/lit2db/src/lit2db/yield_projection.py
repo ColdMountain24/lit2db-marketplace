@@ -53,12 +53,36 @@ def review_lane_from_spec(spec) -> set:
     return out
 
 
+def optional_fields_from_spec(spec) -> set:
+    """Fields the ratified spec marks `required: False`.
+
+    Absent, they are excused; present, they clear the bar like anything else. Without this, a
+    record is blocked by the ABSENCE of a field the spec itself calls optional — which is not the
+    gate working, it is the gate misreading the schema.
+    """
+    fields = getattr(spec, "fields", None)
+    if fields is None and isinstance(spec, dict):
+        fields = spec.get("fields", [])
+    out = set()
+    for f in fields or []:
+        name = getattr(f, "name", None) if not isinstance(f, dict) else f.get("name")
+        req = getattr(f, "required", None) if not isinstance(f, dict) else f.get("required", True)
+        if name and req is False:
+            out.add(name)
+    return out
+
+
+def _is_absent(field_value: dict) -> bool:
+    v = field_value.get("value")
+    return v is None or v == "" or v == [] or v == {}
+
+
 def _clears(field_value: dict, bar: float) -> bool:
     cc = field_value.get("confidence_components") or {}
     return all(cc.get(sig) is not None and cc[sig] >= bar for sig in REQUIRED_SIGNALS)
 
 
-def project(records, *, review_lane=(), bar: float = 1.0) -> dict:
+def project(records, *, review_lane=(), optional=(), bar: float = 1.0) -> dict:
     """Project the auto-accept yield over already-scored records.
 
     `review_lane` — fields excused by design (see `review_lane_from_spec`). They are reported
@@ -67,8 +91,9 @@ def project(records, *, review_lane=(), bar: float = 1.0) -> dict:
     `bar` — the level each required signal must reach. 1.0 is unanimity + full grounding, the
     shipped default; lowering it is a ratified setting (D-034), not a runtime convenience.
     """
-    review_lane = set(review_lane)
+    review_lane, optional = set(review_lane), set(optional)
     per_record, blockers, review_hits = [], Counter(), Counter()
+    absent_optional = Counter()
     n_auto = 0
 
     for r in records:
@@ -78,6 +103,9 @@ def project(records, *, review_lane=(), bar: float = 1.0) -> dict:
             if name in review_lane:
                 if not _clears(fv, bar):
                     review_hits[name] += 1
+                continue
+            if name in optional and _is_absent(fv):
+                absent_optional[name] += 1     # excused: the spec calls it optional
                 continue
             if not _clears(fv, bar):
                 blocking.append(name)
@@ -98,6 +126,7 @@ def project(records, *, review_lane=(), bar: float = 1.0) -> dict:
         # Ranked: the top entry is what to fix, or what to re-ratify the bar for.
         "blocking_fields": blockers.most_common(),
         "review_lane_routed": review_hits.most_common(),
+        "optional_absent": absent_optional.most_common(),
         "per_record": per_record,
     }
 
