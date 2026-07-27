@@ -598,8 +598,24 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
 
         if out_fields:
             seed = next(r for r in present if r is not None)
-            merged.append({"record_id": seed.get("record_id"), "entity_type": etype,
-                           "fields": list(out_fields.values())})
+            rec_out = {"record_id": seed.get("record_id"), "entity_type": etype,
+                       "fields": list(out_fields.values())}
+
+            # A RECORD-LEVEL REVIEW FLAG CARRIES ON ANY VOTE, NOT A MAJORITY — and the
+            # asymmetry is the point. Field VALUES need agreement because the ensemble is
+            # deciding what is true, and one pass asserting something is not evidence. This
+            # flag decides only whether a human looks, so the two errors are not symmetric:
+            # requiring unanimity would let a record through because two passes missed what the
+            # third caught, which is the failure the ensemble exists to prevent, while a
+            # false flag costs one glance at a review queue. Reasons from every flagging pass
+            # are kept, so the reviewer sees how many saw it and why.
+            flagged = [r for r in present if r is not None and r.get("review_only")]
+            if flagged:
+                rec_out["review_only"] = True
+                rec_out["review_reasons"] = sorted({
+                    str(r.get("review_reason") or "unstated") for r in flagged})
+                rec_out["review_flagged_by_passes"] = len(flagged)
+            merged.append(rec_out)
 
     return {"records": merged, "ensemble": report, "k": k,
             "alignment": [{"entity_type": e, "identity": i,

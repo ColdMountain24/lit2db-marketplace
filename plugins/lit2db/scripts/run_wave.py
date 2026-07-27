@@ -392,8 +392,17 @@ def assemble(paper: str, cfg: dict, merged: dict, judge: dict, hunt: dict) -> tu
                 "not_run" if searched == "not_run" else ("found" if evid else "clean"))
             fields.append(fv)
         if fields:
-            out.append({"record_id": rec["record_id"], "entity_type": rec["entity_type"],
-                        "fields": fields})
+            r_out = {"record_id": rec["record_id"], "entity_type": rec["entity_type"],
+                     "fields": fields}
+            # D-067: a record the ratified criteria say can never auto-accept is ROUTED, not
+            # denied silently. `route` already blocks in `gate_reasons` — no new gate mechanism
+            # was needed, only a way to declare the rule and carry it through the merge. The
+            # record keeps every field and its full provenance so the reviewer sees what was
+            # extracted, and the reasons say why it is in front of them.
+            if rec.get("review_only"):
+                r_out["route"] = "human_review"
+                r_out["failure_reason"] = "; ".join(rec.get("review_reasons") or ["review-only"])
+            out.append(r_out)
     return out, dropped
 
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.27.0 — 2026-07-27
+A record the ratified criteria exclude is ROUTED to review, not silently denied (D-067).
+
+- **No new gate mechanism was needed.** `gate_reasons` has always checked `record["route"]`
+  against the blocking routes, so a routed record is denied at composite 1.000 with its reason
+  attached. The decision record claimed this mechanism was missing; it was not, and the claim
+  came from reading the per-field lane without checking the record-level path beside it.
+- **What was actually missing:** the flag did not survive `merge_passes`, which rebuilds records
+  from aligned fields and drops record-level keys — so a flag set by the extractor vanished
+  before the gate could ever see it.
+- **`review_only` carries on ANY pass's vote, not a majority.** Field values need agreement
+  because the ensemble decides what is TRUE; this flag decides only whether a human looks, so
+  the errors are asymmetric. Unanimity would let a record through because two passes missed what
+  the third caught — the failure the ensemble exists to prevent — while a false flag costs one
+  glance at a queue. Every flagging pass's reason is retained.
+- The routed record keeps all its fields and full provenance: the reviewer sees what was
+  extracted and why it is in front of them. Routing excuses nothing else — a retracted source
+  still denies, as its own separate reason.
+- 411 → 419 tests.
+
 ## 0.26.0 — 2026-07-27
 The last resort may not have a prerequisite, and the cost headline counts the document.
 
