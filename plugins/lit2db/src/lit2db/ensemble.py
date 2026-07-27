@@ -240,6 +240,96 @@ def agreement(values: list, rel_tol: float = DEFAULT_REL_TOL, steps=DEFAULT_STEP
     }
 
 
+def agreement_elementwise(passes: list, rel_tol: float = DEFAULT_REL_TOL, steps=DEFAULT_STEPS,
+                          synonyms: Optional[dict] = None,
+                          expand_binomials: bool = False) -> dict:
+    """Agreement for a MULTI-VALUED field, judged per element rather than per set.
+
+    Set-equality unanimity is the wrong bar for a field that is legitimately a list. A promiscuous
+    enzyme yields several products; one pass spotting an extra trace peak makes the sets differ,
+    and under set-equality that single extra element destroys the whole record — including the
+    products all k passes agreed on. Measured on the terpenoid end-to-end run, `product` blocked
+    5 of 9 records that way, more than any other field, despite being a NAMED ENTITY and so
+    exactly the type predicted to be safe.
+
+    So each element votes on its own:
+
+      * an element ALL k passes proposed is unanimous and joins the auto-acceptable **core**
+      * an element only some passes proposed is **deferred** to review, individually, and does
+        not block the core
+
+    **The guarantee is unchanged.** Nothing auto-accepts on less than unanimity — the bar moved
+    from the set to the element, it did not drop. What changes is that a partial finding now
+    reaches a human as a partial finding, instead of silently taking a whole record down with it,
+    which is the same principle as absence never winning the modal vote in `agreement`.
+
+    `c_ensemble` describes the CORE, so it is 1.0 when the core is non-empty. When no element is
+    unanimous there is no core, and it falls back to the best element's fraction — which is below
+    any sane bar, so the field fails, correctly.
+
+    Returns `{c_ensemble, k, core, deferred, n_missing, empty_core}`.
+    """
+    k = len(passes)
+    if k == 0:
+        return {"c_ensemble": None, "k": 0, "core": [], "deferred": [],
+                "n_missing": 0, "empty_core": True}
+
+    def _as_list(p):
+        if p is None:
+            return None
+        return list(p) if isinstance(p, (list, tuple, set)) else [p]
+
+    lists = [_as_list(p) for p in passes]
+    n_missing = sum(1 for p in lists if p is None)
+    present = [p for p in lists if p is not None]
+    if not present:
+        return {"c_ensemble": None, "k": k, "core": [], "deferred": [],
+                "n_missing": n_missing, "empty_core": True}
+
+    # Group elements across passes against a representative, never chained — the same rule
+    # `agreement` uses, and for the same reason: numeric tolerance is not transitive.
+    buckets: list[dict] = []
+    for pass_idx, plist in enumerate(lists):
+        if plist is None:
+            continue
+        seen_this_pass = set()
+        for v in plist:
+            if v is None:
+                continue
+            for b in buckets:
+                if values_agree(b["representative"], v, rel_tol, steps, synonyms):
+                    target = b
+                    break
+            else:
+                target = {"representative": v, "passes": set()}
+                buckets.append(target)
+            # A pass proposing the same element twice votes once.
+            key = id(target)
+            if key not in seen_this_pass:
+                target["passes"].add(pass_idx)
+                seen_this_pass.add(key)
+
+    core, deferred = [], []
+    for b in buckets:
+        n = len(b["passes"])
+        if n == k:
+            core.append(b["representative"])
+        else:
+            deferred.append({"value": b["representative"], "n_agreeing": n,
+                             "c_ensemble": n / k})
+    deferred.sort(key=lambda d: (-d["n_agreeing"], str(d["value"])))
+
+    best = max((len(b["passes"]) for b in buckets), default=0)
+    return {
+        "c_ensemble": 1.0 if core else (best / k if k else None),
+        "k": k,
+        "core": core,                  # auto-acceptable: every pass found these
+        "deferred": deferred,          # to human review, individually
+        "n_missing": n_missing,
+        "empty_core": not core,
+    }
+
+
 def consistency(values: list) -> Optional[float]:
     """`c_consistency` = 1 - coefficient of variation across passes, for NUMERIC fields.
 
