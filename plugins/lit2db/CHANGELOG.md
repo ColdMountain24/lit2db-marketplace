@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.28.0 — 2026-07-27
+`scripts/replay.py` — re-run the spine over saved extraction output. Zero model calls.
+
+- **Why.** Every defect found in this project's first week of real runs was a SPINE defect, not
+  an extraction defect. Each was found by spending ~20 minutes and millions of tokens
+  re-extracting papers that had already been extracted — using the most expensive part of the
+  pipeline as a debugger for the cheapest. 320 records across 39 saved passes were already on
+  disk, and they are a regression corpus.
+- Replays merge → assemble → score → gate through the REAL code path (`run_wave.assemble` is
+  imported, not reimplemented, so a parallel copy cannot drift and validate nothing). Gates
+  against a throwaway database: these records were gated once already and re-writing them would
+  double-count a yield.
+- **11 saved paper-runs replay in under a second.**
+- **It paid for itself on first run.** A model returned `verbatim_quote` as a LIST — one quote
+  per element of a multi-valued field, mirroring the value's shape — and `find_spans` raised,
+  killing the whole paper. Under paper isolation (v0.25.0) that is worse than a crash: the
+  paper is recorded as failed and silently lost from the wave. Each element now anchors on its
+  own. Fixing it recovered a paper and 15 records from artifacts already on disk.
+- **What replay CANNOT tell you**, stated in the module docstring so it is not over-trusted:
+  whether the extractor obeys a CHANGED prompt (saved passes were produced under the prompt of
+  their day), and what a run COSTS (there are no calls). Those need fresh runs. Nothing else does.
+- A low "would write" from pre-v0.24.0 artifacts is reported as an artifact of missing judge
+  verdicts, not as a gate regression — the runs that produced them did not persist verdicts.
+- 419 → 425 tests.
+
 ## 0.27.0 — 2026-07-27
 A record the ratified criteria exclude is ROUTED to review, not silently denied (D-067).
 

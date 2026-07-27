@@ -335,7 +335,19 @@ def assemble(paper: str, cfg: dict, merged: dict, judge: dict, hunt: dict) -> tu
             if value is None:
                 continue
             quote = quote_for(acc, name, value)
-            hits = find_spans(full, quote) if quote else []
+            # A MULTI-VALUED FIELD MAY COME BACK WITH ONE QUOTE PER ELEMENT. Models mirror the
+            # value's shape, so a `list[str]` field gets a list of quotes — which is arguably
+            # the better evidence (D-061 already grounds lists per element) but reached
+            # `find_spans` as a list and threw, killing the whole paper. Under paper isolation
+            # that is worse than a crash: the paper is recorded as failed and silently lost.
+            # Each element is anchored on its own; the first that resolves carries the offset,
+            # and the joined text stays as the quote so nothing claims an anchor it lacks.
+            if isinstance(quote, (list, tuple)):
+                parts = [q for q in quote if isinstance(q, str) and q.strip()]
+                hits = next((h for h in (find_spans(full, q) for q in parts) if h), [])
+                quote = " | ".join(parts) if parts else None
+            else:
+                hits = find_spans(full, quote) if quote else []
             if not hits:
                 # An unanchorable quote is a real outcome: the value does not get written on it.
                 dropped.append({"record": rec["record_id"], "field": name,
