@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.24.0 — 2026-07-27
+The adversarial judge becomes auditable, and the question queue keeps its signal.
+
+- **The judge's reasoning is persisted.** Previously a regex scraped `"verdict"` out of free
+  text and everything else — `reasoning`, `weakest_supported_claim`, `overreach` — was thrown
+  away. No denial anywhere could be audited, in a pipeline whose entire claim is auditability.
+  Every raw response now lands in `judge/`, parsed structurally with regex only as a last
+  resort. A regression found while testing: a single-claim reply carries no `record_id`, so
+  every unbatched judgement had been falling through to the regex path and losing its reasoning.
+- **A missing verdict is a FAILURE, not an absence.** 7 of 45 records in the v4 slice got no
+  parseable verdict and the driver read that as "nothing to say" — a record silently skipping
+  the adversarial check. Now logged, and catalogued as a `no_verdict` question.
+- **A guess is labelled a guess.** A batched reply with no ids can only be paired by order;
+  that pairing is marked `by_position`, and a count mismatch refuses rather than mis-pairs. A
+  mis-attributed verdict is worse than a missing one — it judges a record nobody judged.
+- **`judge_batch_size`** — several records per call, the largest reducible cost term (15 calls
+  per paper, each re-paying a ~28,400-token harness prefix four times larger than the paper).
+  The batched prompt instructs independent judgement per claim; default stays 1.
+- **`paper_concurrency`** — papers ran strictly sequentially (~39 hours for 137). Buys
+  wall-clock, not tokens. Default stays 1, because every paper in flight multiplies the peak
+  rate at which a run hits a usage limit, and surviving one unattended is the driver's point.
+- **The gate write is serialized.** With papers concurrent, SQLite writers collide and a
+  "database is locked" surfaces as a gate DENIAL — a paper losing records to a plumbing fault
+  while every artifact says the pipeline worked.
+- **A review-lane field no longer floods the queue.** `function` is prose ratified as
+  never-auto-acceptable; it disagrees on every record by construction, and was 31 of 75
+  questions, burying the 12 scope disagreements that genuinely needed a human. A queue that
+  always fires trains the reader to ignore it.
+- 391 → 403 tests.
+
 ## 0.23.0 — 2026-07-27
 The wave driver reports what it spent, and a resumed wave still describes the wave (D-065, D-066).
 

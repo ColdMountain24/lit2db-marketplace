@@ -60,6 +60,12 @@ from lit2db.contracts.provenance import process_fingerprint   # noqa: E402
 
 PLUGIN = pathlib.Path(__file__).resolve().parent.parent
 _log_lock = threading.Lock()
+# The gate writes SQLite. With paper_concurrency > 1 several papers reach the gate at once,
+# and concurrent writers to one SQLite file produce "database is locked" — which would surface
+# as a gate DENIAL, i.e. a paper silently losing records to a plumbing fault while every
+# artifact says the pipeline worked. Serializing the write is cheap: the gate is milliseconds
+# against agent calls measured in minutes.
+_gate_lock = threading.Lock()
 
 # A judge verdict is an ordinal, not a probability. PARTIAL sits below any sane auto-accept bar
 # on purpose: "the core is right but something over-reaches" is precisely the case a human
@@ -85,6 +91,62 @@ def _extract_json(text: str) -> dict | None:
         except json.JSONDecodeError:
             continue
     return None
+
+
+_VERDICT = r"SUPPORTED|PARTIAL|UNSUPPORTED"
+
+
+def _parse_verdicts(text: str, ids: list) -> dict:
+    """Map record_id -> the judge's full verdict object, from a single- or multi-claim reply.
+
+    Structured first, regex only as a last resort. The old code was regex-only against
+    `"verdict": "..."`, which threw away `weakest_supported_claim`, `reasoning` and
+    `overreach` even when it succeeded — the parts a human actually needs to audit a denial.
+
+    Order matters for the fallback: a batched reply may carry several verdicts with no ids
+    attached, and pairing the Nth verdict with the Nth requested id is a GUESS. It is labelled
+    as one (`by_position: True`) rather than presented as the judge's answer, because a
+    mis-paired verdict is worse than a missing one — it attributes a judgement to a record
+    nobody made it about.
+    """
+    out = {}
+    blob = _extract_json(text)
+    objs = []
+    if isinstance(blob, dict):
+        objs = blob.get("verdicts") if isinstance(blob.get("verdicts"), list) else [blob]
+    if not objs:
+        arr = re.search(r"\[[\s\S]*\]", text)
+        if arr:
+            try:
+                cand = json.loads(arr.group(0))
+                objs = cand if isinstance(cand, list) else []
+            except json.JSONDecodeError:
+                objs = []
+    for o in objs or []:
+        if not isinstance(o, dict):
+            continue
+        v = str(o.get("verdict", "")).upper()
+        if not re.fullmatch(_VERDICT, v):
+            continue
+        # A single-claim reply carries no `record_id` because it does not need one — the
+        # prompt asked about exactly one claim. Attributing it to that claim is unambiguous,
+        # and NOT doing so was silently dropping every unbatched judgement to the regex path,
+        # discarding the reasoning this function exists to keep.
+        rid = o.get("record_id") if o.get("record_id") in ids else (
+            ids[0] if len(ids) == 1 else None)
+        if rid is not None:
+            out[rid] = {k: o.get(k) for k in
+                        ("verdict", "weakest_supported_claim", "reasoning", "overreach")}
+    if len(ids) == 1 and not out:
+        m = re.search(rf'"verdict"\s*:\s*"({_VERDICT})"', text)
+        if m:
+            out[ids[0]] = {"verdict": m.group(1), "by_regex": True}
+    if not out and len(ids) > 1:
+        found = re.findall(rf'"verdict"\s*:\s*"({_VERDICT})"', text)
+        if len(found) == len(ids):
+            for rid, v in zip(ids, found):
+                out[rid] = {"verdict": v, "by_position": True, "by_regex": True}
+    return out
 
 
 def log(msg: str) -> None:
@@ -335,7 +397,8 @@ def assemble(paper: str, cfg: dict, merged: dict, judge: dict, hunt: dict) -> tu
     return out, dropped
 
 
-def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list) -> list:
+def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list,
+                        unjudged: list | None = None, review_lane: tuple = ()) -> list:
     """Deterministic signals that a RESEARCHER, not the pipeline, has to resolve.
 
     Everything here is a fact about the run, not an opinion about the chemistry. The head
@@ -353,9 +416,23 @@ def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list)
                        "detail": f"{a['identity']} was matched only by order of appearance",
                        "identity_tier": a["identity_tier"]})
     for name, rep in (merged.get("ensemble") or {}).items():
-        if rep.get("ambiguous_modal"):
-            qs.append({"paper": paper, "kind": "no_consensus_value",
-                       "detail": f"{name} split with no majority", "groups": rep.get("groups")})
+        if not rep.get("ambiguous_modal"):
+            continue
+        # A REVIEW-LANE FIELD DISAGREEING IS NOT NEWS. `function` is free prose the researcher
+        # already ratified as never-auto-acceptable (T11): three independent readings phrase it
+        # three ways every single time, by construction. Measured: 31 of 75 questions in the v4
+        # slice were this one field, burying the 12 scope_disagreements that genuinely need a
+        # human. A queue that always fires trains the researcher to stop reading it, which
+        # destroys the signal for the cases that matter — the same argument the hunter prompt
+        # makes about manufacturing doubt.
+        if any(name.endswith(f":{f}") or name == f for f in review_lane):
+            continue
+        qs.append({"paper": paper, "kind": "no_consensus_value",
+                   "detail": f"{name} split with no majority", "groups": rep.get("groups")})
+    for rid in (unjudged or []):
+        qs.append({"paper": paper, "kind": "no_verdict",
+                   "detail": f"{rid}: the adversarial judge returned no parseable verdict; "
+                             f"the raw response is in judge/ — a record that skipped its check"})
     for f in failures:
         qs.append({"paper": paper, "kind": "pass_failed",
                    "detail": f"pass {f['pass']} ({f['model']}) did not complete: {f['why']}"})
@@ -404,21 +481,62 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     jt = pathlib.Path(cfg["judge_prompt"]).read_text(encoding="utf-8")
     store = pathlib.Path(cfg["stores"]) / paper
 
-    def judge_one(rec):
-        claim = "; ".join(f"{f['field_name']} = {f.get('value')}" for f in rec["fields"]
-                          if f.get("value") is not None)
-        p = jt.replace("{STORE}", str(store)).replace("{CLAIM}", claim)
-        r = call_agent(p, cfg["judge_model"], label=f"{paper} judge/{rec['record_id']}",
-                       cwd=pdir, fuse=fuse, stage="judge", unit=paper, read_dirs=(store,))
-        m = re.search(r'"verdict"\s*:\s*"(SUPPORTED|PARTIAL|UNSUPPORTED)"', r["text"] or "")
-        return rec["record_id"], (m.group(1) if m else None)
+    jdir = pdir / "judge"
+    jdir.mkdir(exist_ok=True)
+    batch_n = max(1, int(cfg.get("judge_batch_size", 1)))
 
-    verdicts = {}
+    def _claim(rec):
+        return "; ".join(f"{f['field_name']} = {f.get('value')}" for f in rec["fields"]
+                         if f.get("value") is not None)
+
+    def judge_batch(batch):
+        """One judge call over `batch` records. Returns [(record_id, verdict|None)].
+
+        THE RAW RESPONSE IS ALWAYS PERSISTED, verdict or not. Previously only a regex-scraped
+        verdict survived and the judge's reasoning was discarded, so nobody could audit why a
+        record passed its adversarial check — in a pipeline whose entire claim is auditability.
+        It also made the 7-of-45 missing verdicts undiagnosable: there was nothing left to read.
+        """
+        ids = [r["record_id"] for r in batch]
+        if batch_n == 1:
+            p = jt.replace("{STORE}", str(store)).replace("{CLAIM}", _claim(batch[0]))
+        else:
+            claims = "\n".join(f"[{r['record_id']}] {_claim(r)}" for r in batch)
+            p = (jt.replace("{STORE}", str(store)).replace("{CLAIM}", claims)
+                 + "\n\n## Several claims in one call\n"
+                   f"You are given {len(batch)} claims, each prefixed with its record id in "
+                   "square brackets. **Judge each one INDEPENDENTLY against the source.** A "
+                   "verdict on one claim is not evidence about another, and claims sharing a "
+                   "source is not a reason to give them the same verdict.\n"
+                   "Return a JSON ARRAY, one object per claim, each carrying its "
+                   '`record_id` alongside the fields described above.')
+        label = f"{paper} judge/{'+'.join(ids)}" if batch_n > 1 else f"{paper} judge/{ids[0]}"
+        r = call_agent(p, cfg["judge_model"], label=label, cwd=pdir, fuse=fuse,
+                       stage="judge", unit=paper, read_dirs=(store,))
+        (jdir / f"{'_'.join(ids)}.raw.txt").write_text(r["text"] or "")
+
+        parsed = _parse_verdicts(r["text"] or "", ids)
+        (jdir / f"{'_'.join(ids)}.json").write_text(json.dumps(
+            {"record_ids": ids, "ok": r["ok"], "parsed": parsed}, indent=1))
+        return [(rid, parsed.get(rid, {}).get("verdict")) for rid in ids]
+
+    recs = merged["records"]
+    batches = [recs[i:i + batch_n] for i in range(0, len(recs), batch_n)]
+    verdicts, unjudged = {}, []
     with cf.ThreadPoolExecutor(max_workers=cfg.get("judge_concurrency", 4)) as ex:
-        for rid, v in ex.map(judge_one, merged["records"]):
-            if v:
-                verdicts[rid] = v
-    log(f"{paper}: judged {len(verdicts)}/{len(merged['records'])}")
+        for pairs in ex.map(judge_batch, batches):
+            for rid, v in pairs:
+                if v:
+                    verdicts[rid] = v
+                else:
+                    unjudged.append(rid)
+    # A MISSING VERDICT IS A FAILURE, NOT AN ABSENCE. Silently treating "the judge did not
+    # answer" as "there was nothing to say" lets a record skip the adversarial check that is
+    # the point of the pipeline. Measured: 7 of 45 records in the v4 slice, invisible.
+    if unjudged:
+        log(f"{paper}: NO VERDICT for {len(unjudged)}/{len(recs)} — raw responses in judge/")
+    log(f"{paper}: judged {len(verdicts)}/{len(recs)}"
+        + (f" (batches of {batch_n})" if batch_n > 1 else ""))
 
     hp = pathlib.Path(cfg["hunter_prompt"]).read_text(encoding="utf-8")
     values = json.dumps([{ "record_id": r["record_id"],
@@ -455,10 +573,11 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                                  ensemble_k=len(cfg["models"]), ensemble_min_agreeing=0,
                                  review_lane=cfg.get("review_lane", []))
         comp = sr.get("_composite_confidence") or 0.0
-        g = srv.gate_upsert(record=sr, composite_confidence=comp, db_path=cfg["db_path"],
-                            autoaccept=cfg["auto_accept_threshold"],
-                            require_contradiction_search=True,
-                            review_lane=cfg.get("review_lane", []))
+        with _gate_lock:
+            g = srv.gate_upsert(record=sr, composite_confidence=comp, db_path=cfg["db_path"],
+                                autoaccept=cfg["auto_accept_threshold"],
+                                require_contradiction_search=True,
+                                review_lane=cfg.get("review_lane", []))
         written += bool(g.get("written"))
         scored.append({"record": sr, "composite": comp, "gate": g})
 
@@ -467,7 +586,8 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                                                             "composite": s["composite"],
                                                             "gate": s["gate"]} for s in scored]},
                                                  indent=1))
-    qs = catalogue_questions(paper, merged, failures, dropped)
+    qs = catalogue_questions(paper, merged, failures, dropped, unjudged=unjudged,
+                             review_lane=tuple(cfg.get("review_lane", [])))
     log(f"{paper}: {written}/{len(scored)} written, {len(qs)} question(s), "
         f"{time.time() - t0:.0f}s")
     return {"paper": paper, "status": "done", "n_records": len(scored), "n_written": written,
@@ -553,13 +673,29 @@ def main() -> int:
 
     wait_for_offpeak(a.start_hour)
     results, questions = list(carried), []
+    # PAPER-LEVEL CONCURRENCY BUYS WALL-CLOCK, NOT TOKENS. Token cost is calls x per-call
+    # context and does not change with how many run at once; 137 papers sequential is ~39
+    # hours. Default stays 1: every extra paper in flight multiplies the peak rate at which
+    # this hits a usage limit, and the driver's whole point is surviving one unattended.
+    n_par = max(1, int(cfg.get("paper_concurrency", 1)))
     try:
-        for n, p in enumerate(todo, 1):
-            log(f"--- paper {n}/{len(todo)} ---")
-            r = do_paper(p, cfg, out, fuse)
-            results.append(r)
-            questions.extend(r.get("questions", []))
-            _write_manifest(out, cfg, papers, results, questions, fuse, complete=False)
+        if n_par == 1:
+            for n, p in enumerate(todo, 1):
+                log(f"--- paper {n}/{len(todo)} ---")
+                r = do_paper(p, cfg, out, fuse)
+                results.append(r)
+                questions.extend(r.get("questions", []))
+                _write_manifest(out, cfg, papers, results, questions, fuse, complete=False)
+        else:
+            log(f"--- {len(todo)} papers, {n_par} at a time ---")
+            with cf.ThreadPoolExecutor(max_workers=n_par) as ex:
+                futs = {ex.submit(do_paper, p, cfg, out, fuse): p for p in todo}
+                for fut in cf.as_completed(futs):
+                    r = fut.result()
+                    results.append(r)
+                    questions.extend(r.get("questions", []))
+                    _write_manifest(out, cfg, papers, results, questions, fuse,
+                                    complete=False)
     except FuseExceeded as exc:
         log(f"FUSE TRIPPED — {exc}")
     except KeyboardInterrupt:
