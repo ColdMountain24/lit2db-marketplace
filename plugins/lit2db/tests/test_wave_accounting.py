@@ -197,3 +197,42 @@ def test_unreadable_pass_is_re_run_rather_than_trusted(tmp_path, monkeypatch):
            "models": ["opus"]}
     passes, failures, completed = run_wave.run_passes("PMC1", cfg, pdir, Fuse(label="w"))
     assert completed == [True] and passes[0][0]["record_id"] == "fresh"
+
+
+# --- 4. one paper may not kill a wave --------------------------------------------------
+def test_a_paper_that_raises_is_recorded_and_the_wave_continues(tmp_path, monkeypatch):
+    """Measured: PMC10046388 raised out of merge_passes and the traceback ended the run on
+    paper 1 of 2, after paying for three extraction passes. Unlike a fuse trip it leaves no
+    resumable state, because the paper never reaches scored.json."""
+    monkeypatch.setattr(run_wave, "_do_paper",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("no identity field")))
+    r = run_wave.do_paper("PMC1", {}, tmp_path, Fuse(label="w"))
+    assert r["status"] == "error"
+    assert "no identity field" in r["error"]
+    assert r["questions"][0]["kind"] == "paper_failed", "the researcher must see it"
+    assert r["n_records"] == 0 and r["n_written"] == 0
+
+
+def test_a_tripped_fuse_still_stops_the_whole_run(tmp_path, monkeypatch):
+    """The fuse is the safety device. Swallowing it per-paper would turn a runaway-loop brake
+    into a hiccup, which is strictly worse than having no fuse — it would look like one."""
+    from lit2db.fuse import FuseExceeded
+
+    def boom(*a, **k):
+        raise FuseExceeded("max_tokens_total", 1, 2, "w")
+
+    monkeypatch.setattr(run_wave, "_do_paper", boom)
+    with pytest.raises(FuseExceeded):
+        run_wave.do_paper("PMC1", {}, tmp_path, Fuse(label="w"))
+
+
+def test_an_errored_paper_is_not_counted_as_done(tmp_path):
+    err = {"paper": "PMC1", "status": "error", "n_records": 0, "n_written": 0,
+           "failures": [], "dropped": [], "questions": []}
+    ok = {"paper": "PMC2", "status": "done", "n_records": 3, "n_written": 1,
+          "failures": [], "dropped": [], "questions": []}
+    run_wave._write_manifest(tmp_path, {}, ["PMC1", "PMC2"], [err, ok], [],
+                             Fuse(label="w"), complete=True)
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert m["n_done"] == 1, "a failed paper must not inflate the completion count"
+    assert m["n_records"] == 3

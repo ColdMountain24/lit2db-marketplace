@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.25.0 — 2026-07-27
+One paper may not kill a wave.
+
+- `PMC10046388` raised out of `merge_passes` and the traceback ended the run on paper 1 of 2,
+  after paying for three extraction passes. In a 137-paper wave left overnight that is the
+  whole wave lost to one unusual paper — and unlike a fuse trip it leaves nothing resumable,
+  because the paper never reaches `scored.json`.
+- A failing paper is now recorded (`status: error`), catalogued as a `paper_failed` question,
+  and the wave continues. It does NOT count toward `n_done`.
+- `FuseExceeded` is deliberately still fatal: it is the safety device, and swallowing it
+  per-paper would turn a runaway-loop brake into a hiccup — worse than no fuse, because it
+  would look like one.
+- 403 → 406 tests.
+
 ## 0.24.0 — 2026-07-27
 The adversarial judge becomes auditable, and the question queue keeps its signal.
 

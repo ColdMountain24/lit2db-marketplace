@@ -443,6 +443,30 @@ def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list,
 
 
 def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
+    """One paper, end to end. ONE PAPER MAY NOT KILL A WAVE.
+
+    Measured: PMC10046388 raised out of `merge_passes` and the traceback ended the run on paper
+    1 of 2, after paying for three extraction passes. In a 137-paper wave left running
+    overnight that is the whole wave lost to one unusual paper — and unlike a fuse trip it
+    leaves no resumable state, because the paper never reached `scored.json`.
+
+    `FuseExceeded` is deliberately NOT caught here: it is the safety device, it means the whole
+    run must stop, and swallowing it per-paper would turn a runaway-loop brake into a hiccup.
+    """
+    try:
+        return _do_paper(paper, cfg, out, fuse)
+    except FuseExceeded:
+        raise
+    except Exception as exc:                                    # noqa: BLE001 — deliberate
+        log(f"{paper}: FAILED — {type(exc).__name__}: {exc}")
+        return {"paper": paper, "status": "error", "n_records": 0, "n_written": 0,
+                "failures": [{"pass": None, "model": None, "why": f"{type(exc).__name__}: {exc}"}],
+                "dropped": [], "error": f"{type(exc).__name__}: {exc}",
+                "questions": [{"paper": paper, "kind": "paper_failed",
+                               "detail": f"{type(exc).__name__}: {exc}"}]}
+
+
+def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     pdir = out / paper
     pdir.mkdir(parents=True, exist_ok=True)
     if (pdir / "scored.json").exists():
