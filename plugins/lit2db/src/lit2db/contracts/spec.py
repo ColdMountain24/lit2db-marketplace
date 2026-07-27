@@ -75,6 +75,14 @@ class FieldSpec(BaseModel):
     definition: str
     provenance_granularity: str        # what distinguishes two records (protocol axis 10)
     ledger_item_id: str                # MUST trace to a ratified ledger item
+    # Whether this field may EVER auto-accept. Set False for prose: a free-text field fails both
+    # mechanical checks at once — not verbatim in the source, so lexical grounding refuses; and
+    # phrased differently by every independent pass, so the ensemble never agrees. Measured:
+    # `function` grounded 5/9 and was unanimous across three passes in 1/9, while
+    # `source_organism` grounded 9/9. A field marked False is HUMAN-REVIEW OUTPUT BY DESIGN and
+    # is excluded from the auto-accept condition rather than counted as a failure — otherwise
+    # every record carrying one is blocked and the yield reads as a broken pipeline.
+    auto_acceptable: bool = True
 
 
 class CorpusQuery(BaseModel):
