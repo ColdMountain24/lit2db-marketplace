@@ -80,6 +80,29 @@ class RunAccount:
                 t[s] += acc[s]
         return t
 
+    def by_stage(self) -> dict:
+        """Per-stage stream split — the axis that says WHAT TO CUT when a run does not fit.
+
+        Public because a run manifest needs it: a wave that reports one collapsed number can
+        be over budget without anyone being able to see which stage spent it. Returns copies,
+        so a caller writing a manifest cannot mutate the account it is reporting on.
+        """
+        return {k: dict(v) for k, v in sorted(self._by_stage.items())}
+
+    def by_unit(self) -> dict:
+        """Per-unit stream split, same contract as `by_stage`."""
+        return {k: dict(v) for k, v in sorted(self._by_unit.items())}
+
+    def work_tokens(self) -> int:
+        """The headline figure (D-065): input + output — new content only.
+
+        The ONLY total comparable to a projection, because projections are built in input
+        tokens. Cache streams are real and are reported separately by `totals()`; folding them
+        in here would recreate the units error this method exists to end.
+        """
+        t = self.totals()
+        return t["input"] + t["output"]
+
     @property
     def n_units(self) -> int:
         return len([u for u in self._by_unit if u != "(unattributed)"])

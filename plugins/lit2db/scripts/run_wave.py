@@ -52,6 +52,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
+from lit2db.accounting import STREAMS, RunAccount             # noqa: E402
 from lit2db.ensemble import merge_passes                      # noqa: E402
 from lit2db.fuse import Fuse, FuseExceeded                    # noqa: E402
 from lit2db.store import find_spans, section_of               # noqa: E402
@@ -121,7 +122,7 @@ def _seconds_until_reset(text: str, default: int) -> int:
 
 
 def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
-               fuse: Fuse, stage: str = "", read_dirs: tuple = (),
+               fuse: Fuse, stage: str = "", unit: str = "", read_dirs: tuple = (),
                timeout: int = 1800, retries: int = 3, backoff: int = 900) -> dict:
     """One headless agent invocation. Returns {ok, text, tokens, attempts}.
 
@@ -157,8 +158,13 @@ def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
             # Hand the fuse the RAW usage mapping: it keeps input/output/cache_read/cache_write
             # apart, and collapsing them to one integer here would throw away the cache split
             # that makes a long run's cost legible.
-            norm = fuse.record(usage, unit=label, stage=stage)
+            # `unit` is the PAPER, not the call. per_unit_mean() is what extrapolates to a
+            # wave budget, and a mean over calls answers a question nobody asked — papers are
+            # what a wave is counted in. Falls back to the label so an uninstrumented caller
+            # still records something attributable rather than "(unattributed)".
+            norm = fuse.record(usage, unit=unit or label, stage=stage)
             return {"ok": True, "text": text, "tokens": sum(norm.values()),
+                    "work_tokens": norm["input"] + norm["output"], "streams": dict(norm),
                     "attempts": attempt}
         last = blob.strip()[-400:]
         if _LIMIT_RE.search(blob):
@@ -168,7 +174,8 @@ def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
             continue
         log(f"    {label}: exit {r.returncode} (attempt {attempt}/{retries}) {last[:120]}")
         time.sleep(10 * attempt)
-    return {"ok": False, "text": last, "tokens": 0, "attempts": retries}
+    return {"ok": False, "text": last, "tokens": 0, "work_tokens": 0,
+            "streams": {s: 0 for s in STREAMS}, "attempts": retries}
 
 
 # ---------------------------------------------------------------------------------------
@@ -183,6 +190,20 @@ def run_passes(paper: str, cfg: dict, pdir: pathlib.Path, fuse: Fuse) -> tuple[l
     def one(i: int) -> tuple[int, dict]:
         out_dir = pdir / f"pass{i + 1}"
         out_dir.mkdir(parents=True, exist_ok=True)
+        # RESUME AT THE STAGE, NOT THE PAPER. A paper that died during judging has three
+        # finished extractions on disk; re-running them costs the most expensive stage twice
+        # and — worse — silently REPLACES the ensemble that the surviving artifacts came from,
+        # so a resumed paper is no longer the paper that was partly judged. Reuse is the
+        # correctness fix; the saved tokens are a side effect.
+        done = out_dir / f"pass{i + 1}.json"
+        if done.exists():
+            try:
+                json.loads(done.read_text())["records"]
+                log(f"    {paper} pass{i + 1}/{models[i]}: reusing completed pass on disk")
+                return i, {"ok": True, "text": "(reused)", "tokens": 0, "work_tokens": 0,
+                           "streams": {s: 0 for s in STREAMS}, "attempts": 0, "reused": True}
+            except (json.JSONDecodeError, KeyError, OSError):
+                pass          # unreadable: fall through and re-run it
         prompt = (template
                   .replace("{STORE}", str(store))
                   .replace("{OUT_DIR}", str(out_dir))
@@ -190,7 +211,8 @@ def run_passes(paper: str, cfg: dict, pdir: pathlib.Path, fuse: Fuse) -> tuple[l
                   + "\n\nYou are ONE independent pass of an ensemble. Do not read any other "
                     "pass's output directory. Write only to your own out_dir.")
         return i, call_agent(prompt, models[i], label=f"{paper} pass{i + 1}/{models[i]}",
-                             cwd=pdir, fuse=fuse, stage="extract", read_dirs=(store,))
+                             cwd=pdir, fuse=fuse, stage="extract", unit=paper,
+                             read_dirs=(store,))
 
     passes, failures, completed = [None] * len(models), [], [False] * len(models)
     with cf.ThreadPoolExecutor(max_workers=len(models)) as ex:
@@ -387,7 +409,7 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                           if f.get("value") is not None)
         p = jt.replace("{STORE}", str(store)).replace("{CLAIM}", claim)
         r = call_agent(p, cfg["judge_model"], label=f"{paper} judge/{rec['record_id']}",
-                       cwd=pdir, fuse=fuse, stage="judge", read_dirs=(store,))
+                       cwd=pdir, fuse=fuse, stage="judge", unit=paper, read_dirs=(store,))
         m = re.search(r'"verdict"\s*:\s*"(SUPPORTED|PARTIAL|UNSUPPORTED)"', r["text"] or "")
         return rec["record_id"], (m.group(1) if m else None)
 
@@ -404,7 +426,7 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                          for r in merged["records"]], indent=1)
     hr = call_agent(hp.replace("{STORE}", str(store)).replace("{VALUES}", values),
                     cfg["hunter_model"], label=f"{paper} hunter", cwd=pdir, fuse=fuse,
-                    stage="hunter", read_dirs=(store,))
+                    stage="hunter", unit=paper, read_dirs=(store,))
     hunt = {"state_by_record": {}, "contradictions": []}
     parsed = _extract_json(hr["text"] or "")
     if parsed:
@@ -452,6 +474,26 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
             "failures": failures, "dropped": dropped, "questions": qs}
 
 
+def _recover_done(out: pathlib.Path, paper: str) -> dict | None:
+    """Rebuild a finished paper's manifest row from its `scored.json`.
+
+    Only counts and outcomes are recoverable. TOKENS ARE NOT: they were spent in an earlier
+    process whose account died with it, so a resumed wave's token totals describe the legs
+    that actually ran and say so, rather than quietly under-reporting a number that looks
+    complete. `carried_from_disk` is the flag that keeps the two readable apart.
+    """
+    f = out / paper / "scored.json"
+    try:
+        d = json.loads(f.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    gate = d.get("gate", [])
+    return {"paper": paper, "status": "done", "carried_from_disk": True,
+            "n_records": len(d.get("records", [])),
+            "n_written": sum(bool((g.get("gate") or {}).get("written")) for g in gate),
+            "failures": [], "dropped": [], "questions": []}
+
+
 # ---------------------------------------------------------------------------------------
 def wait_for_offpeak(start_hour: int | None) -> None:
     """Hold until the configured local hour. Long runs are cheapest and least disruptive
@@ -485,7 +527,17 @@ def main() -> int:
         papers = papers[:a.limit]
     todo = [p for p in papers if not (out / p / "scored.json").exists()]
 
-    fuse = Fuse(label=f"wave:{out.name}")
+    # A RESUMED PAPER IS STILL A PAPER IN THIS WAVE. `todo` correctly skips work already on
+    # disk, but the manifest was built only from `results`, so everything finished on an
+    # earlier leg vanished from n_done / n_records / n_written / per_paper. A driver whose
+    # headline feature is sleeping through a usage limit and resuming was reporting its LAST
+    # LEG as though it were the wave. Observed: two papers complete on disk, manifest said
+    # n_done 1. Carried forward from disk, marked so nobody mistakes it for fresh work.
+    carried = [_recover_done(out, p) for p in papers if p not in todo]
+    carried = [c for c in carried if c]
+
+    account = RunAccount(label=f"wave:{out.name}")
+    fuse = Fuse(label=f"wave:{out.name}", account=account)
     fuse.raise_ceiling(max_calls=cfg["fuse"]["max_calls"],
                        max_tokens_total=cfg["fuse"]["max_tokens"],
                        reason=f"{len(papers)}-paper wave")
@@ -500,7 +552,7 @@ def main() -> int:
         return 0
 
     wait_for_offpeak(a.start_hour)
-    results, questions = [], []
+    results, questions = list(carried), []
     try:
         for n, p in enumerate(todo, 1):
             log(f"--- paper {n}/{len(todo)} ---")
@@ -523,15 +575,52 @@ def main() -> int:
     return 0
 
 
+def _tokens_block(fuse) -> dict:
+    """The four streams, kept apart, with the ratified headline named (D-065).
+
+    `work` — input + output — is the headline: what the model genuinely read in and wrote out,
+    and the ONLY figure comparable to a projection, which is built in input tokens. Cache
+    traffic is reported beside it, never folded in. Measured on one extraction pass, 92% of
+    the collapsed total was cache; comparing that against an input-token projection is a units
+    error, and it is the mechanism behind an "8.0x over projection" figure that turned out not
+    to correlate with document size at all.
+
+    `total_all_streams` is retained because it is what the FUSE trips on and what plausibly
+    tracks a usage limit — but it is named for what it is instead of being called "tokens".
+    """
+    acc = getattr(fuse, "account", None)
+    if acc is None:
+        return {"instrumented": False,
+                "_why": "no RunAccount attached — only the collapsed total exists"}
+    t = acc.totals()
+    per_paper = acc.per_unit_mean()
+    return {
+        "instrumented": True,
+        "headline_work_tokens": acc.work_tokens(),
+        "by_stream": dict(t),
+        "total_all_streams": sum(t.values()),
+        "by_stage": acc.by_stage(),
+        "per_paper_mean": {"measured_on_papers": acc.n_units,
+                           "work": round(per_paper["input"] + per_paper["output"]),
+                           "by_stream": {k: round(v) for k, v in per_paper.items()}},
+        "_headline": "work = input + output (D-065); cache streams are reported, never folded in",
+    }
+
+
 def _write_manifest(out, cfg, papers, results, questions, fuse, *, complete):
     done = [r for r in results if r["status"] == "done"]
+    carried = [r for r in done if r.get("carried_from_disk")]
     (out / "manifest.json").write_text(json.dumps({
         "complete": complete, "config": cfg,
         "n_papers": len(papers), "n_done": len(done),
         "n_records": sum(r["n_records"] for r in done),
         "n_written": sum(r["n_written"] for r in done),
         "n_questions": len(questions),
+        # Counts above span every leg of the wave; tokens below span only the legs that ran in
+        # THIS process. Stating both keeps a resumed wave from reading as a cheap one.
+        "n_done_carried_from_earlier_legs": len(carried),
         "papers_with_failed_passes": [r["paper"] for r in results if r.get("failures")],
+        "tokens": _tokens_block(fuse),
         "fuse": fuse.snapshot(), "per_paper": results,
     }, indent=1) + "\n")
     with (out / "QUESTIONS.jsonl").open("w") as fh:

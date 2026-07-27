@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.23.0 — 2026-07-27
+The wave driver reports what it spent, and a resumed wave still describes the wave (D-065, D-066).
+
+- **The four token streams stay apart.** `Fuse.tokens_total` sums input + output + cache_read +
+  cache_write; `run_wave.py` attached no `RunAccount`, so the split was computed, used for the
+  sum, and discarded — while the comment above the call claimed it was preserved. Measured on
+  one instrumented extraction pass: input 50, output 24,236, cache_read 237,749, cache_write
+  47,959. **92% of the collapsed total is cache traffic**, and it was being compared against
+  projections built in input tokens.
+- **The headline is `work` = input + output** — the only figure comparable to a projection.
+  Cache streams are reported beside it, never folded in. `total_all_streams` is retained and
+  named for what it is, because that is what the fuse trips on. `RunAccount` gains public
+  `by_stage()`, `by_unit()` and `work_tokens()`; the manifest carries a `tokens` block with the
+  per-stage split, so a run that does not fit says WHICH stage spent it.
+- **A resumed paper is still a paper in this wave.** `todo` skips work already on disk, but the
+  manifest was built only from the current leg, so finished papers vanished from `n_done`,
+  `n_records`, `n_written` and `per_paper`. Observed: two papers complete on disk, manifest
+  reported `n_done: 1`. Carried forward from `scored.json` and flagged `carried_from_disk` —
+  tokens are NOT recovered, because they were spent in a process whose account died with it.
+- **Resume at the stage, not the paper.** A paper that died during judging re-ran its three
+  finished extractions. That is not merely wasteful: it replaces the ensemble the surviving
+  artifacts came from, so the resumed paper is no longer the paper that was partly judged.
+- Found by running the calibration slice, not by reading the code. At the measured rate, wave
+  1's 120M ceiling would have halted the run at **roughly paper 16 of 137**.
+- Judge batching — the largest reducible term — is deliberately NOT in this release: changing it
+  mid-slice would have made paper 1 incomparable to papers 2 and 3.
+- 380 → 391 tests.
+
 ## 0.22.0 — 2026-07-27
 A ratified review-lane field is held, not written — and stops vetoing the row (D-064).
 
