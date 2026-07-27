@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "lit2db-marketplace",
   "description": "Reference marketplace for the lit2db literature-to-database pipeline plugin.",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "owner": {
     "name": "Aryan Pathak",
     "url": "https://github.com/ColdMountain24/lit2db-marketplace"
@@ -12,7 +12,7 @@
       "name": "lit2db",
       "source": "./plugins/lit2db",
       "description": "Build ML-ready, auditable databases from literature + structured data. Agent proposes structure; researcher ratifies substance; a deterministic verify/route/gate spine wraps the extractor.",
-      "version": "0.18.0",
+      "version": "0.19.0",
       "category": "data",
       "tags": [
         "extraction",
