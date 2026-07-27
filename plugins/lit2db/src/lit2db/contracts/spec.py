@@ -10,6 +10,7 @@ enforces that structurally: `SchemaReadySpec.frozen_fields()` derives fields onl
 from ratified ledger entries. An agent cannot inject an unratified field.
 """
 from __future__ import annotations
+import re
 from enum import Enum
 from typing import Literal, Optional
 from pydantic import BaseModel, Field, model_validator
@@ -90,6 +91,52 @@ class FieldSpec(BaseModel):
     # real paper — a record was blocked by the ABSENCE of a field the spec calls optional.
     # An optional field that IS present still has to clear the bar like any other.
     required: bool = True
+
+    def shape_issues(self, value) -> list:
+        """Does an extracted value LOOK like the type this field was ratified as?
+
+        Catches the defect that made `product` the binding constraint on a real run. It was
+        declared a named entity, so §7.1 predicted it would auto-accept — but the extractor
+        returned `"thujopsan-2β-ol (major product) and thujopsene (minor product)"`, a sentence.
+        Three passes phrase a sentence three ways, so the field behaved as PROSE while wearing a
+        named-entity label, and nothing anywhere noticed. The ensemble simply reported
+        disagreement, which looked like a hard domain, not a schema violation.
+
+        Advisory by design: returns findings, decides nothing. Field types here are open strings
+        (`"str"`, `"list[str]"`, `"enum"`), so this checks the shapes it can recognise and stays
+        silent otherwise rather than guessing. Domain-INVARIANT — it reads punctuation and length,
+        never meaning.
+        """
+        issues = []
+        if value is None or value == "" or value == []:
+            return issues
+
+        declared_list = self.type.startswith("list")
+        if declared_list and not isinstance(value, (list, tuple)):
+            issues.append(f"declared {self.type} but got a single {type(value).__name__} — a "
+                          "multi-valued field collapsed into one value cannot be compared "
+                          "per element, and agreement will read as disagreement")
+        items = list(value) if isinstance(value, (list, tuple)) else [value]
+
+        for v in items:
+            if not isinstance(v, str):
+                continue
+            s = v.strip()
+            # An entity name is short and does not contain connectives or clause punctuation.
+            # These are the exact markers in the value that broke the real run.
+            prose = (len(s) > 80
+                     or re.search(r"\b(and|or|with|which|that|while|whereas)\b", s, re.I)
+                     or s.count(";") or s.count(",") > 1 or re.search(r"\.\s+\w", s))
+            if prose and self.type in ("str", "enum") or (prose and declared_list):
+                issues.append(
+                    f"value {s[:60]!r} reads as PROSE but the field is declared {self.type!r}. "
+                    "A prose value in a field typed as a name or enum cannot auto-accept — "
+                    "independent passes will phrase it differently every time. Either the "
+                    "extractor should split it, or the field should be marked "
+                    "auto_acceptable=False and budgeted as human review.")
+            if self.enum and s not in self.enum:
+                issues.append(f"value {s[:40]!r} is not in the ratified vocabulary {self.enum}")
+        return issues
 
 
 class CorpusQuery(BaseModel):
