@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.26.0 — 2026-07-27
+The last resort may not have a prerequisite, and the cost headline counts the document.
+
+- **Identity (D-069).** The chain's ordinal tier was scoped *inside* `genus_species`, so a record
+  with no accession, no name-pair and no organism had no identity at all and `merge_passes`
+  refused the whole paper. **2 of 3 fresh corpus papers died this way** — both chassis studies
+  putting 8 and 23 synthases through one host, the richest papers in the corpus. Ordinal now
+  falls back to order within the SOURCE, as a distinct `ordinal_unscoped` tier so a disagreement
+  under it reads as a possible mis-pairing rather than as evidence.
+- **`ordinal_within` absent stays OFF.** Declaring it is how a researcher ratifies that
+  positional alignment is acceptable for an entity type; its absence is a decision, not an
+  omission. The first cut of this fix applied ordinal to every spec with a chain, silently
+  enabling alignment nobody ratified — caught by an existing test, now pinned by its own.
+- **Cost headline (D-070, amends D-065)** is `input + cache_write + output`: first-time content,
+  however it arrived. With caching on a source document is never billed as `input` — it arrives
+  as `cache_write` — so the previous headline structurally excluded the paper being read.
+  Measured: input **138**, cache_write **351,862**; the old definition reported 155,270 where
+  the model had processed ~507,132. `cache_read` is re-reads, reported beside it via
+  `reread_tokens()`, never folded in.
+- 406 → 411 tests.
+
 ## 0.25.0 — 2026-07-27
 One paper may not kill a wave.
 

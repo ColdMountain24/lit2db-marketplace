@@ -457,10 +457,24 @@ def _identity(rec: dict, spec, steps, ordinal: Optional[int] = None) -> Optional
         if v:
             tier = "primary" if i == 0 else f"fallback{i}"
             return (v, tier)
+    # An ordinal tier applies ONLY where the researcher ratified one by declaring
+    # `ordinal_within`. Its absence is a decision, not an omission: it says this entity type
+    # may not be aligned by position at all, and the safe outcome is a singleton per pass
+    # rather than a half-filled key colliding with every other half-filled key.
     if ordinal is not None and s["ordinal_within"]:
         scope = _level_value(rec, s["ordinal_within"], steps)
         if scope:
             return (f"{scope}#ord{ordinal}", "ordinal")
+        # THE LAST RESORT MAY NOT HAVE A PREREQUISITE (D-069). Scoping the ordinal inside a
+        # field means the fallback fails whenever THAT field is missing — so a record with no
+        # accession, no name-pair and no organism had no identity at all, and merge_passes
+        # refused the whole paper. Measured: 2 of 3 fresh corpus papers died this way, both
+        # chassis studies putting 8 and 23 synthases through one host, which are the richest
+        # papers in the corpus. Falling back to order within the SOURCE is weaker again —
+        # nothing scopes it, so two passes listing entities in different orders will mis-pair —
+        # and it is tiered separately so a disagreement under it reads as a possible mis-pairing
+        # rather than as evidence about the chemistry.
+        return (f"#ord{ordinal}", "ordinal_unscoped")
     return None
 
 
@@ -503,14 +517,17 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
             etype = rec.get("entity_type")
             spec = identity_fields.get(etype)
             resolved = _identity(rec, spec, steps)          # chain only, no ordinal yet
-            if resolved is None:
+            if resolved is None and _id_spec(spec)["ordinal_within"]:
                 s = _id_spec(spec)
                 scope = _level_value(rec, s["ordinal_within"], steps) \
                     if s["ordinal_within"] else None
-                if scope is not None:
-                    ordinal = seen_in_scope.get((etype, scope), 0)
-                    seen_in_scope[(etype, scope)] = ordinal + 1
-                    resolved = _identity(rec, spec, steps, ordinal=ordinal)
+                # `scope or None` collapses the unscoped case into the same counter, so the nth
+                # organism-less record of a pass lines up with the nth in another. Kept in the
+                # same dict deliberately: a record that HAS an organism must not consume a
+                # number from the unscoped sequence, or the two drift apart per pass.
+                ordinal = seen_in_scope.get((etype, scope), 0)
+                seen_in_scope[(etype, scope)] = ordinal + 1
+                resolved = _identity(rec, spec, steps, ordinal=ordinal)
             ident = resolved[0] if resolved else None
             if resolved:
                 id_tiers[(etype, ident)] = resolved[1]

@@ -103,3 +103,51 @@ def test_multi_record_types_without_any_identity_still_refuse():
     p = [[rec("a", name="X"), rec("b", name="Y")], [rec("c", name="X")]]
     with pytest.raises(ValueError, match="identity"):
         merge_passes(p, identity_fields={})
+
+
+# --- D-069: the last resort may not have a prerequisite ---------------------------------
+CHASSIS = {"enzyme": {"chain": ["accession", ["organism", "name"]],
+                      "ordinal_within": ["organism"]}}
+
+
+def test_a_record_with_no_organism_still_gets_an_identity():
+    """Measured: 2 of 3 fresh corpus papers died here, both chassis studies putting 8 and 23
+    synthases through one host — the richest papers in the corpus, and unrepresentable.
+
+    The chain's last resort was ordinal scoped INSIDE `organism`, so a record missing the
+    organism had no accession, no name-pair and no ordinal: no identity at all, and
+    merge_passes refused the entire paper.
+    """
+    p = [[rec("a", name="bisabolene synthase")]] * 2
+    m = merge_passes(p, identity_fields=CHASSIS)
+    assert len(m["records"]) == 1
+    assert m["alignment"][0]["identity_tier"] == "ordinal_unscoped"
+
+
+def test_unscoped_ordinal_is_a_DIFFERENT_tier_from_scoped():
+    """It is weaker again — nothing scopes it, so two passes listing entities in different
+    orders mis-pair. Blending it into `ordinal` would hide that from everything downstream."""
+    p = [[rec("a", organism="S. albus"), rec("b", name="orphan synthase")]] * 2
+    m = merge_passes(p, identity_fields=CHASSIS)
+    tiers = {a["identity_tier"] for a in m["alignment"]}
+    assert tiers == {"ordinal", "ordinal_unscoped"}
+
+
+def test_a_record_with_an_organism_does_not_consume_an_unscoped_number():
+    """The two sequences must not share a counter, or they drift apart per pass — the same
+    class of bug as counting ordinals over all records instead of unidentified ones."""
+    a = [rec("x", organism="S. albus"), rec("y", name="orphan"), rec("z", organism="S. albus")]
+    b = [rec("y", name="orphan"), rec("x", organism="S. albus"), rec("z", organism="S. albus")]
+    m = merge_passes([a, b], identity_fields=CHASSIS)
+    assert all(al["found_by_passes"] == 2 for al in m["alignment"]), (
+        "reordering between passes must not break alignment for either sequence")
+
+
+def test_ordinal_stays_OFF_when_the_researcher_ratified_no_tiebreak():
+    """`ordinal_within` absent is a DECISION, not an omission: it says this entity type may not
+    be aligned by position. Regressed once — the D-069 fix initially applied ordinal to every
+    spec with a chain, silently enabling positional alignment nobody ratified."""
+    p = [[rec("a", organism="S. coelicolor")], [rec("b", organism="S. coelicolor")]]
+    m = merge_passes(p, identity_fields={"enzyme": {"chain": ["accession",
+                                                             ["organism", "name"]]}})
+    assert all(a["identity_tier"] == "singleton" for a in m["alignment"])

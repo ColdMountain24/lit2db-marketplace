@@ -94,14 +94,24 @@ class RunAccount:
         return {k: dict(v) for k, v in sorted(self._by_unit.items())}
 
     def work_tokens(self) -> int:
-        """The headline figure (D-065): input + output — new content only.
+        """The headline figure (D-070, amending D-065): FIRST-TIME content, however it arrived.
 
-        The ONLY total comparable to a projection, because projections are built in input
-        tokens. Cache streams are real and are reported separately by `totals()`; folding them
-        in here would recreate the units error this method exists to end.
+        `input + cache_write + output`. The distinction that matters is first-time versus
+        re-read, NOT input versus cache — and D-065 got that wrong in a way only measurement
+        caught. With caching on, a source document is never billed as `input`; it arrives as
+        `cache_write`. Measured on a real run: input **138**, cache_write **351,862**. So the
+        original headline structurally excluded the document being read, reporting 155,270
+        where the model had processed ~507,132 of first-time material.
+
+        `cache_read` stays out: it is the same content read again, and folding it in is what
+        made a figure that was 92% re-reads look like a cost overrun.
         """
         t = self.totals()
-        return t["input"] + t["output"]
+        return t["input"] + t["cache_write"] + t["output"]
+
+    def reread_tokens(self) -> int:
+        """Content the model read again — reported beside the headline, never inside it."""
+        return self.totals()["cache_read"]
 
     @property
     def n_units(self) -> int:

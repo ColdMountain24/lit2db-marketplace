@@ -738,12 +738,14 @@ def main() -> int:
 def _tokens_block(fuse) -> dict:
     """The four streams, kept apart, with the ratified headline named (D-065).
 
-    `work` — input + output — is the headline: what the model genuinely read in and wrote out,
-    and the ONLY figure comparable to a projection, which is built in input tokens. Cache
-    traffic is reported beside it, never folded in. Measured on one extraction pass, 92% of
-    the collapsed total was cache; comparing that against an input-token projection is a units
-    error, and it is the mechanism behind an "8.0x over projection" figure that turned out not
-    to correlate with document size at all.
+    `work` — input + cache_write + output (D-070) — is the headline: everything the model saw
+    for the FIRST TIME, however it arrived, plus what it wrote. The distinction is first-time
+    versus re-read, not input versus cache: with caching on a source document is never billed
+    as `input`, it arrives as `cache_write`, so an input-only headline excludes the very paper
+    being read (measured: input 138, cache_write 351,862 on one run). `cache_read` is reported
+    beside it and never folded in — it was 92% of the collapsed total, and comparing THAT
+    against an input-token projection is the mechanism behind an "8.0x over projection" figure
+    that turned out not to correlate with document size at all.
 
     `total_all_streams` is retained because it is what the FUSE trips on and what plausibly
     tracks a usage limit — but it is named for what it is instead of being called "tokens".
@@ -757,13 +759,15 @@ def _tokens_block(fuse) -> dict:
     return {
         "instrumented": True,
         "headline_work_tokens": acc.work_tokens(),
+        "reread_tokens": acc.reread_tokens(),
         "by_stream": dict(t),
         "total_all_streams": sum(t.values()),
         "by_stage": acc.by_stage(),
         "per_paper_mean": {"measured_on_papers": acc.n_units,
-                           "work": round(per_paper["input"] + per_paper["output"]),
+                           "work": round(per_paper["input"] + per_paper["cache_write"]
+                                         + per_paper["output"]),
                            "by_stream": {k: round(v) for k, v in per_paper.items()}},
-        "_headline": "work = input + output (D-065); cache streams are reported, never folded in",
+        "_headline": "work = input + cache_write + output (D-070): first-time content, however it arrived. cache_read is re-reads, reported beside it, never folded in.",
     }
 
 

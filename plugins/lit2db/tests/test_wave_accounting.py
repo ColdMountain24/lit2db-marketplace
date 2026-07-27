@@ -35,17 +35,32 @@ def _usage(inp, out, cr, cw):
             "cache_read_input_tokens": cr, "cache_creation_input_tokens": cw}
 
 
-def test_headline_is_new_content_not_the_collapsed_total():
-    """The measured shape of a real pass: output is small, cache_read dwarfs everything."""
+def test_headline_is_first_time_content_however_it_arrived():
+    """D-070, amending D-065. The measured shape of a real extraction pass.
+
+    D-065 defined the headline as input + output. Measurement then showed that with caching on
+    a source document is NEVER billed as input — it arrives as cache_write — so that headline
+    structurally excluded the paper being read. The distinction that matters is first-time
+    versus re-read, not input versus cache.
+    """
     acc = RunAccount(label="t")
     acc.record(_usage(50, 24_236, 237_749, 47_959), unit="PMC1", stage="extract")
 
-    assert acc.work_tokens() == 24_286, "headline must be input + output only (D-065)"
+    assert acc.work_tokens() == 72_245, "input + cache_write + output (D-070)"
+    assert acc.reread_tokens() == 237_749, "re-reads are reported, never folded into the headline"
     assert sum(acc.totals().values()) == 309_994
 
-    # The distinction is the whole point: the collapsed number is >12x the headline, and it is
-    # the collapsed number that was being compared against input-token projections.
-    assert sum(acc.totals().values()) > 12 * acc.work_tokens()
+    # The old definition would have reported 24,286 — excluding a 47,959-token document read.
+    assert acc.work_tokens() > 2 * (acc.totals()["input"] + acc.totals()["output"])
+
+
+def test_a_document_read_once_is_counted_even_with_no_input_tokens():
+    """The exact failure D-070 fixes: input 138 against cache_write 351,862 on a real run.
+    An input-only headline says the pipeline read almost nothing."""
+    acc = RunAccount(label="t")
+    acc.record(_usage(138, 155_132, 2_982_482, 351_862), unit="PMC1", stage="extract")
+    assert acc.work_tokens() == 507_132
+    assert acc.work_tokens() > 3 * (138 + 155_132)
 
 
 def test_by_stage_says_what_to_cut():
@@ -74,7 +89,8 @@ def test_manifest_tokens_block_is_present_and_split():
 
     block = run_wave._tokens_block(fuse)
     assert block["instrumented"] is True
-    assert block["headline_work_tokens"] == 24_286
+    assert block["headline_work_tokens"] == 72_245
+    assert block["reread_tokens"] == 237_749
     assert block["total_all_streams"] == 309_994
     assert set(block["by_stream"]) == set(STREAMS)
     assert block["per_paper_mean"]["measured_on_papers"] == 1
