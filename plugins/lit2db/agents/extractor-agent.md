@@ -30,12 +30,14 @@ bar built on it would mean nothing.
   an index into that exact file. `sections.json` maps offsets to section labels.
 - **Grep/Glob** are your span retrieval: search the store for candidate passages rather than
   pulling whole documents into context.
-- **Never compute a char offset yourself — call `locate_spans`.** Grep is how you FIND a passage;
-  it is not how you get its offset. `grep -b` reports *byte* offsets while the store's contract is
+- **Never compute a char offset — emit the quote and stop.** You do not hold `locate_spans`; the
+  spine calls it on your quote and anchors the offset for you. Grep is how you FIND a passage, it
+  is not how you get its offset: `grep -b` reports *byte* offsets while the store's contract is
   *character* offsets, and every paper here carries non-ASCII (µ, °, –, Greek letters), so the two
   drift apart silently and by a growing amount down the document. A wrong offset still slices real
   text out of the file, so nothing downstream can catch it — it lands in the database as a
-  plausible-looking quote anchored to the wrong place.
+  plausible-looking quote anchored to the wrong place. Copy the quote **verbatim**, because that
+  string is the only thing the spine has to search with.
 - **Write** one `ExtractedRecord` JSON per record, at the path the orchestrator gives you.
 - You do NOT call `gate_upsert`. `/lit2db-verify` runs the spine over what you emit. A record you
   are confident about can still be denied — that is the system working, not a failure of yours.
@@ -48,8 +50,8 @@ Run the three classification steps:
     ad-hoc per-paper decision.
 
 ## Every value carries its evidence
-A verbatim quote plus char offset from the Stage-1 store. The offset is load-bearing — it
-disambiguates repeated entities within one document. If you cannot ground a value in a quote, do
+A verbatim quote from the Stage-1 store — the offset the spine derives from it is load-bearing,
+because it disambiguates repeated entities within one document. If you cannot ground a value in a quote, do
 not emit the value: emit the record without it and let the field route to human review. A missing
 field is recoverable; a fabricated one poisons the database.
 

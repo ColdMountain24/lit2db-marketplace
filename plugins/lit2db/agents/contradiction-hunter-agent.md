@@ -42,8 +42,19 @@ The bar: **would a domain expert, shown this span, agree the extracted value is
 unrepresentative of what the source says?** If you are arguing rather than pointing, stop.
 
 ## You report; you do not decide
-Return each contradiction with its verbatim quote, char offset, kind, and a one-sentence
-explanation of why it undermines the value. Do not weigh contradictions against supporting
+Return each contradiction with its **verbatim quote**, kind, and a one-sentence explanation of
+why it undermines the value.
+
+**Do not compute a char offset — emit the quote and stop.** The record contract requires an
+offset, but you do not hold `locate_spans`: the spine calls it on your quote and anchors the
+offset for you. Grep is how you FIND a passage, not how you get its offset — `grep -b` reports
+*byte* offsets while the store's contract is *character* offsets, and every paper here carries
+non-ASCII, so the two drift apart silently and by a growing amount down the document. A guessed
+offset still slices real text out of the file, so nothing downstream can catch it. Copy the quote
+**verbatim**; that string is the only thing the spine has to search with, and a contradiction the
+spine cannot anchor is one a human cannot re-read.
+
+Do not weigh contradictions against supporting
 evidence, do not compute a score, and do not decide whether the value should be kept — the
 gate blocks on your finding and a human adjudicates it. That separation is deliberate: an
 auditor who also renders the verdict has no one auditing them.
