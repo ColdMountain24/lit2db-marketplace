@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.30.0 — 2026-07-27
+A paper gets a deadline, and the prompts stop telling agents to grep a document that fits.
+
+- **The cause.** All three prompts told the agent to "use Grep to find candidate passages rather
+  than re-reading the whole file." Measured across the 921-store corpus: the **largest paper is
+  ~37k tokens against a 200k context** — every paper fits several times over. So the advice
+  optimised a constraint that does not exist, and it costs both time and tokens, because *turns*
+  are the driver: each search is a turn, and each turn re-reads everything accumulated. One
+  Sonnet extraction pass hung for 1800s on a 93kB paper. Prompts now say read it once, in full,
+  and say why.
+- **The symptom.** A flat 1800s per-call timeout applied to a 1.7kB store and a 149kB store
+  alike, and with `retries=3` one stuck pass could burn **90 minutes** — silently, because a
+  driver waiting is indistinguishable from a driver working. Now: per-call timeout scales with
+  document size (`420s + 12s/kB`, capped at 1800s), and the **paper** carries a hard deadline
+  (`paper_timeout`, default 2400s) that retries may not cross and that clips any single call.
+- Bounding each attempt while leaving the paper unbounded was the wrong shape; the paper is the
+  unit a wave schedules, so the paper is the unit that gets the budget.
+- 395 → 399 tests.
+
 ## 0.29.0 — 2026-07-27
 Remove the superseded corpus runner and the cost model that kept being wrong (D-074).
 

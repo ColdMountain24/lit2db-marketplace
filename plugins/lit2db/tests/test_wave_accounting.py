@@ -252,3 +252,60 @@ def test_an_errored_paper_is_not_counted_as_done(tmp_path):
     m = json.loads((tmp_path / "manifest.json").read_text())
     assert m["n_done"] == 1, "a failed paper must not inflate the completion count"
     assert m["n_records"] == 3
+
+
+# --- 5. one paper may not run forever -------------------------------------------------
+def test_per_call_timeout_scales_with_the_document(tmp_path):
+    """A flat 1800s was applied to a 1.7kB store and a 149kB store alike."""
+    stores = tmp_path / "s"
+    for name, size in (("small", 2_000), ("big", 150_000)):
+        d = stores / name
+        d.mkdir(parents=True)
+        (d / "full.txt").write_text("x" * size)
+    cfg = {"stores": str(stores)}
+    small, _ = run_wave._paper_budget(cfg, "small")
+    big, _ = run_wave._paper_budget(cfg, "big")
+    assert small < big, "a 2kB paper must not get the same allowance as a 150kB one"
+    assert big <= 1800, "and the ceiling still caps it"
+
+
+def test_a_missing_store_still_yields_a_budget(tmp_path):
+    """Never crash computing a timeout — a missing store is the ingest stage's problem."""
+    per_call, deadline = run_wave._paper_budget({"stores": str(tmp_path)}, "absent")
+    assert per_call > 0 and deadline > 0
+
+
+def test_retries_may_not_cross_the_paper_deadline(tmp_path, monkeypatch):
+    """The measured failure: one pass hit 1800s and retries=3 would have burned 90 MINUTES
+    before the driver gave up — silently, because waiting looks like working. A per-call
+    timeout multiplied by a retry count bounds each attempt and leaves the PAPER unbounded."""
+    import subprocess as sp
+    attempts = []
+
+    def always_timeout(*a, **k):
+        attempts.append(k.get("timeout"))
+        raise sp.TimeoutExpired(cmd="claude", timeout=k.get("timeout", 1))
+
+    monkeypatch.setattr(run_wave.subprocess, "run", always_timeout)
+    monkeypatch.setattr(run_wave.time, "sleep", lambda *_: None)
+
+    r = run_wave.call_agent("p", "haiku", label="t", cwd=tmp_path, fuse=Fuse(label="w"),
+                            timeout=600, retries=3, deadline=run_wave.time.time() - 1)
+    assert r["ok"] is False
+    assert attempts == [], "an already-expired deadline must prevent even the FIRST call"
+
+
+def test_a_call_is_clipped_to_the_remaining_paper_budget(tmp_path, monkeypatch):
+    import subprocess as sp
+    seen = []
+
+    def capture(*a, **k):
+        seen.append(k.get("timeout"))
+        raise sp.TimeoutExpired(cmd="claude", timeout=k.get("timeout", 1))
+
+    monkeypatch.setattr(run_wave.subprocess, "run", capture)
+    monkeypatch.setattr(run_wave.time, "sleep", lambda *_: None)
+    run_wave.call_agent("p", "haiku", label="t", cwd=tmp_path, fuse=Fuse(label="w"),
+                        timeout=1800, retries=1,
+                        deadline=run_wave.time.time() + 300)
+    assert seen and seen[0] <= 300, "a call must not be allowed to outlive its paper"

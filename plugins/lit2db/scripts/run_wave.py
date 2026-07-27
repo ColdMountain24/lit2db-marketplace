@@ -189,7 +189,8 @@ def _seconds_until_reset(text: str, default: int) -> int:
 
 def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
                fuse: Fuse, stage: str = "", unit: str = "", read_dirs: tuple = (),
-               timeout: int = 1800, retries: int = 3, backoff: int = 900) -> dict:
+               timeout: int = 1800, retries: int = 3, backoff: int = 900,
+               deadline: float | None = None) -> dict:
     """One headless agent invocation. Returns {ok, text, tokens, attempts}.
 
     `read_dirs` MUST include the source store. A headless agent cannot pause to ask for a
@@ -205,11 +206,24 @@ def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
         cmd += ["--add-dir", d]
     last = ""
     for attempt in range(1, retries + 1):
+        # A PER-PAPER DEADLINE THAT RETRIES MAY NOT CROSS. Measured: one Sonnet pass on the
+        # largest store we had run hit the 1800s timeout, and with retries=3 that single pass
+        # would have burned 90 MINUTES before the driver gave up — silently, because waiting is
+        # indistinguishable from working. A flat per-call timeout multiplied by a retry count is
+        # the wrong shape: it bounds each attempt and leaves the PAPER unbounded.
+        if deadline is not None and time.time() >= deadline:
+            last = f"paper deadline reached before attempt {attempt}"
+            log(f"    {label}: {last} — giving up on this call")
+            break
+        # Never let one call run past the paper's own deadline either.
+        call_timeout = timeout
+        if deadline is not None:
+            call_timeout = max(60, min(timeout, int(deadline - time.time())))
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=timeout, cwd=str(cwd))
+                               timeout=call_timeout, cwd=str(cwd))
         except subprocess.TimeoutExpired:
-            last = f"timeout after {timeout}s"
+            last = f"timeout after {call_timeout}s"
             log(f"    {label}: {last} (attempt {attempt}/{retries})")
             continue
         blob = (r.stdout or "") + (r.stderr or "")
@@ -278,7 +292,8 @@ def run_passes(paper: str, cfg: dict, pdir: pathlib.Path, fuse: Fuse) -> tuple[l
                     "pass's output directory. Write only to your own out_dir.")
         return i, call_agent(prompt, models[i], label=f"{paper} pass{i + 1}/{models[i]}",
                              cwd=pdir, fuse=fuse, stage="extract", unit=paper,
-                             read_dirs=(store,))
+                             read_dirs=(store,), timeout=cfg.get("_call_timeout", 1800),
+                             deadline=cfg.get("_deadline"))
 
     passes, failures, completed = [None] * len(models), [], [False] * len(models)
     with cf.ThreadPoolExecutor(max_workers=len(models)) as ex:
@@ -491,6 +506,21 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                                "detail": f"{type(exc).__name__}: {exc}"}]}
 
 
+def _paper_budget(cfg: dict, paper: str) -> tuple:
+    """(per_call_timeout, deadline) for one paper, scaled to the document.
+
+    A flat 1800s was applied to a 1.7kB store and a 149kB store alike. Every store in this
+    corpus fits in context several times over (largest ~37k tokens against a 200k window), so
+    per-call time should track size, and the PAPER should carry the hard stop.
+    """
+    store = pathlib.Path(cfg["stores"]) / paper / "full.txt"
+    kb = (store.stat().st_size / 1024) if store.exists() else 40.0
+    per_call = int(cfg.get("call_timeout_base", 420) + kb * cfg.get("call_timeout_per_kb", 12))
+    per_call = min(per_call, int(cfg.get("call_timeout_max", 1800)))
+    budget = int(cfg.get("paper_timeout", 2400))
+    return per_call, time.time() + budget
+
+
 def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     pdir = out / paper
     pdir.mkdir(parents=True, exist_ok=True)
@@ -498,6 +528,8 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
         return {"paper": paper, "status": "skipped"}
 
     t0 = time.time()
+    call_timeout, deadline = _paper_budget(cfg, paper)
+    cfg = {**cfg, "_call_timeout": call_timeout, "_deadline": deadline}
     log(f"{paper}: {len(cfg['models'])} extraction passes")
     passes, failures, completed = run_passes(paper, cfg, pdir, fuse)
     if not any(completed):
@@ -561,7 +593,8 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                    '`record_id` alongside the fields described above.')
         label = f"{paper} judge/{'+'.join(ids)}" if batch_n > 1 else f"{paper} judge/{ids[0]}"
         r = call_agent(p, cfg["judge_model"], label=label, cwd=pdir, fuse=fuse,
-                       stage="judge", unit=paper, read_dirs=(store,))
+                       stage="judge", unit=paper, read_dirs=(store,),
+                       timeout=cfg.get("_call_timeout", 1800), deadline=cfg.get("_deadline"))
         (jdir / f"{'_'.join(ids)}.raw.txt").write_text(r["text"] or "")
 
         parsed = _parse_verdicts(r["text"] or "", ids)
@@ -593,7 +626,8 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                          for r in merged["records"]], indent=1)
     hr = call_agent(hp.replace("{STORE}", str(store)).replace("{VALUES}", values),
                     cfg["hunter_model"], label=f"{paper} hunter", cwd=pdir, fuse=fuse,
-                    stage="hunter", unit=paper, read_dirs=(store,))
+                    stage="hunter", unit=paper, read_dirs=(store,),
+                    timeout=cfg.get("_call_timeout", 1800), deadline=cfg.get("_deadline"))
     hunt = {"state_by_record": {}, "contradictions": []}
     parsed = _extract_json(hr["text"] or "")
     if parsed:
