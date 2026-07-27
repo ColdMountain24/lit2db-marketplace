@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Drive a whole wave headlessly: spawn every agent, run the spine, stop for the researcher.
 
-`run_corpus.py` prepares per-paper task files and aggregates afterward; the agent work between
-them ran through a human-attended session. That does not scale — 137 papers is ~1,650 agent
-invocations, and an orchestrator holding all of it in one context fills up around paper fifteen.
-This is the missing half: it spawns the agents itself, runs the deterministic spine in-process,
-and survives being left alone overnight.
+The first runner prepared per-paper task files and aggregated afterward, with the agent work
+between them running through a human-attended session (removed in v0.29.0; see git history).
+That does not scale — 137 papers is ~2,600 agent invocations, and an orchestrator holding all of
+it in one context fills up around paper fifteen. This spawns the agents itself, runs the
+deterministic spine in-process, and survives being left alone overnight.
+
+Its companion is `replay.py`, which re-runs everything downstream of extraction over saved
+passes with no model calls. Reach for that first: every spine defect found so far was
+reproducible from artifacts already on disk.
 
 WHAT IT WILL NOT DO. It never adjudicates. Every verification decision still belongs to the
 spine (`ground_literature` -> `score_and_route` -> `gate_upsert`) and every scientific decision

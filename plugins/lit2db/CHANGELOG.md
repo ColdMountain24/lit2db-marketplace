@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.29.0 — 2026-07-27
+Remove the superseded corpus runner and the cost model that kept being wrong (D-074).
+
+- **Deleted:** `scripts/run_corpus.py`, `tests/test_run_corpus.py`,
+  `src/lit2db/yield_projection.py` and its test. `run_wave.py` supersedes the runner and
+  `replay.py` covers what it was still being used for.
+- **Why it was urgent, not cosmetic.** `project_cost` had been wrong five times by the journal's
+  own count, was left in the wrong unit entirely by D-070 — it projects input tokens while every
+  measurement now reports first-time content — and stayed importable with tests pinning it.
+  Three separate sessions picked it up and computed a wrong budget. A stale formula that still
+  runs is not documentation; it is a trap.
+- **Kept, after checking rather than assuming:** `screening.py` (T22, used by the corpus build),
+  `dedup.py` (T16, caught two correction notices in the 921), `entity.py` (wired into the MCP
+  server, three commands and two agents), and `stages/` `adapters/` `tools/` (the intentional
+  contract scaffolding M1 builds on). "Not called by the runner" and "dead" are different things.
+- 425 → 395 tests, entirely from deleting the tests of deleted code.
+
 ## 0.28.0 — 2026-07-27
 `scripts/replay.py` — re-run the spine over saved extraction output. Zero model calls.
 
