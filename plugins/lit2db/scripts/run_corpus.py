@@ -119,6 +119,11 @@ def main() -> int:
     ap.add_argument("--judge-prompt", type=int, default=1200)
     ap.add_argument("--extract-prompt", type=int, default=3000)
     ap.add_argument("--bar", type=float, default=1.0, help="agreement bar; ratified (D-034)")
+    ap.add_argument("--models", default="opus,sonnet,haiku",
+                    help="ONE MODEL PER PASS (D-053). Isolation alone is not an ensemble: three "
+                         "isolated invocations of the same model on the same prompt can agree by "
+                         "construction rather than by evidence, which makes c_ensemble decorative "
+                         "while it appears load-bearing.")
     a = ap.parse_args()
 
     spec = json.loads(pathlib.Path(a.spec).read_text())
@@ -129,6 +134,12 @@ def main() -> int:
     papers = load_papers(stores, a.papers)
     if a.limit:
         papers = papers[:a.limit]
+    models = [m.strip() for m in a.models.split(",") if m.strip()]
+    if len(models) != a.k:
+        raise SystemExit(f"--models lists {len(models)} models but k={a.k}; one model per pass")
+    if len(set(models)) == 1:
+        print("WARNING: every pass uses the same model. Agreement will measure resampling "
+              "variance, not independent convergence — see D-053.", flush=True)
 
     review_lane = review_lane_from_spec(spec)
     tokens = {p: prose_tokens(stores / p) for p in papers}
@@ -172,11 +183,21 @@ def main() -> int:
               "work. Per-paper task files are written below — drive them with /lit2db-extract, "
               "then re-run this script to aggregate.")
         for p in todo:
+            # Same initialization, unique directory per pass, one model each. Identical input is
+            # what makes MODEL the only varying term, so a disagreement is attributable.
+            passes = [{"pass_index": i + 1, "model": models[i],
+                       "out_dir": str(out / p / f"pass{i + 1}"),
+                       "writes": f"pass{i + 1}.json"} for i in range(a.k)]
+            for ps in passes:
+                pathlib.Path(ps["out_dir"]).mkdir(parents=True, exist_ok=True)
             (out / p / "TASK.json").write_text(json.dumps({
                 "source_id": p, "store": str(stores / p),
                 "prose_tokens": tokens[p], "k": a.k,
                 "spec": str(pathlib.Path(a.spec).resolve()),
                 "review_lane": sorted(review_lane),
+                "passes": passes,
+                "isolation": ("each pass runs as its own subagent in a fresh context and writes "
+                              "ONLY to its own out_dir; no pass may read another's output"),
                 "expects": list(PASS_FILES) + ["merged.json", "scored.json"],
             }, indent=1) + "\n")
 
@@ -197,7 +218,8 @@ def main() -> int:
         "spec": str(pathlib.Path(a.spec).resolve()),
         "spec_version": spec.get("spec_version"),
         "stores": str(stores),
-        "config": {"k": a.k, "records_per_paper": a.records_per_paper, "bar": a.bar,
+        "config": {"k": a.k, "models": models,
+                   "records_per_paper": a.records_per_paper, "bar": a.bar,
                    "judge_prompt": a.judge_prompt, "extract_prompt": a.extract_prompt,
                    "batching": "judge per record, hunter per paper (D-036)"},
         "corpus": {"n_papers": len(papers), "prose_tokens": corpus_tokens,
