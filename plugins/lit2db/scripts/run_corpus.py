@@ -69,8 +69,38 @@ def prose_tokens(store: pathlib.Path) -> int:
     return len(f.read_text(encoding="utf-8")) // 4 if f.exists() else 0
 
 
+# THE COST UNIT IS THE AGENT INVOCATION, NOT THE DOCUMENT.
+#
+# Measured 2026-07-27 over nine extraction passes across three papers spanning 6,374 -> 17,130
+# prose tokens (a 2.7x spread):
+#
+#     per-pass cost   mean 70,880   stdev 12,843   range 51,737 - 91,275
+#     correlation(prose tokens, pass cost) = -0.14      <- effectively none
+#
+# A 17k-token paper cost the same as a 6k-token one. What an agent spends is dominated by its
+# own loop — system prompt, tool schemas, reasoning, tool results — and the source is a minor
+# term in this size range. So every token-proportional model is wrong in the same way, whether
+# it charges a fraction of the document (`f_extract = 0.5`, the 215M error) or a multiple of it
+# (the 8.0x this constant briefly was): both make cost track a quantity it does not track.
+#
+# The multiple-of-document version reproduced its own n=1 calibration exactly and still
+# predicted that a 17k paper costs 2.7x a 6k paper, when measurement says they cost the same.
+# Fitting one point is not a model.
+#
+# CALIBRATED RANGE: 6k-17k prose tokens, terpene-synthase prompts, this agent stack. The
+# document term is folded into the floor and is NOT extrapolable — a 130k-token paper will
+# exceed these. Re-measure per project, as D-037 already requires for `records_per_paper`.
+COST_PER_EXTRACT_PASS = 70_880       # n=9, stdev 12,843
+COST_PER_JUDGE_CALL = 22_747         # n=3
+COST_PER_HUNTER_CALL = 31_459        # n=1
+
+
 def project_cost(total_tokens: int, n_papers: int, *, k: int, records_per_paper: int,
-                 judge_prompt: int, extract_prompt: int) -> dict:
+                 judge_prompt: int, extract_prompt: int,
+                 cost_per_extract_pass: int = COST_PER_EXTRACT_PASS,
+                 cost_per_judge_call: int = COST_PER_JUDGE_CALL,
+                 cost_per_hunter_call: int = COST_PER_HUNTER_CALL,
+                 one_read: bool = False) -> dict:
     """The D-036 configuration: judge PER RECORD, hunter PER PAPER.
 
     `n_papers` is a separate argument on purpose. Every prompt overhead here is charged PER
@@ -83,14 +113,29 @@ def project_cost(total_tokens: int, n_papers: int, *, k: int, records_per_paper:
     per-paper constant applied per-corpus (here). **The formula is the hazard, not the author.**
     That is the argument for `--dry-run` existing at all: print the budget and read it before the
     run, because a projection nobody checks is how all three survived.
+
+    The fourth instance was structural, and the fix is above: cost is counted in AGENT
+    INVOCATIONS, because that is what measurement says it tracks. Set `one_read=True` to
+    reproduce the token-proportional arithmetic the D-036/D-050 figures were computed under —
+    those numbers are historical record and must stay reproducible.
     """
-    ext = k * (total_tokens + n_papers * extract_prompt)
-    jud = records_per_paper * (total_tokens + n_papers * judge_prompt)
-    hun = total_tokens + n_papers * records_per_paper * judge_prompt
+    if one_read:                       # the pre-2026-07-27 model, kept so its outputs reproduce
+        ext = k * (total_tokens + n_papers * extract_prompt)
+        jud = records_per_paper * (total_tokens + n_papers * judge_prompt)
+        hun = total_tokens + n_papers * records_per_paper * judge_prompt
+    else:
+        ext = k * n_papers * cost_per_extract_pass
+        jud = records_per_paper * n_papers * cost_per_judge_call
+        hun = n_papers * cost_per_hunter_call
     overhead = n_papers * 4000
+    total = ext + jud + hun + overhead
     return {"extract": ext, "judge": jud, "hunter": hun, "overhead": overhead,
-            "total": ext + jud + hun + overhead,
-            "per_paper_mean": (ext + jud + hun + overhead) // max(1, n_papers)}
+            "total": total, "per_paper_mean": total // max(1, n_papers),
+            "model": "one_read_per_token" if one_read else "per_invocation",
+            "unit_costs": None if one_read else {
+                "extract_pass": cost_per_extract_pass, "judge_call": cost_per_judge_call,
+                "hunter_call": cost_per_hunter_call},
+            "calibrated_range": None if one_read else "6k-17k prose tokens/paper (n=9 passes)"}
 
 
 def paper_done(pdir: pathlib.Path) -> bool:

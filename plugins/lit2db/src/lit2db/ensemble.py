@@ -46,7 +46,21 @@ _CONFUSABLES = {
     "−": "-",   # MINUS SIGN
     "–": "-",   # EN DASH
     "—": "-",   # EM DASH
+    # The dash family below cost a real entity. One paper typeset
+    # "neodolabella‐1(14),2,7‐triene" with U+2010 HYPHEN where another mention used plain
+    # U+002D, so the same enzyme aligned as two and produced two database rows. NFKC does not
+    # fold these — they are distinct characters, not compatibility forms — so nothing upstream
+    # collapses them. This is squarely what normalization is for (D-035): the difference is
+    # typographic, not semantic content.
+    "‐": "-",   # HYPHEN
+    "‑": "-",   # NON-BREAKING HYPHEN
+    "‒": "-",   # FIGURE DASH
+    "­": "",    # SOFT HYPHEN — invisible, and survives extraction out of PDFs
     "’": "'",   # RIGHT SINGLE QUOTATION MARK
+    "‘": "'",   # LEFT SINGLE QUOTATION MARK
+    "“": '"',   # LEFT DOUBLE QUOTATION MARK
+    "”": '"',   # RIGHT DOUBLE QUOTATION MARK
+    "′": "'",   # PRIME
     " ": " ",   # NO-BREAK SPACE
 }
 
@@ -391,11 +405,63 @@ def _fields_of(rec: dict) -> dict:
     return {f.get("field_name"): f for f in (rec.get("fields") or []) if isinstance(f, dict)}
 
 
-def _identity(rec: dict, id_field: Optional[str], steps) -> Optional[str]:
-    if not id_field:
-        return None
-    f = _fields_of(rec).get(id_field)
-    return normalize(f.get("value"), steps) if f else None
+def _id_spec(spec) -> dict:
+    """Normalize a ratified identity declaration into {chain, ordinal_within}.
+
+    Three accepted shapes, because the ratified rule is a FALLBACK CHAIN and a bare field name
+    could not express it:
+
+        "accession"                                     one field (back-compatible)
+        ["accession", ["genus_species", "enzyme_name"]] chain; a level may be composite
+        {"chain": [...], "ordinal_within": [...]}       chain + a tiebreak scope
+
+    Terpenoid's T4 — *accession, else (genus_species + enzyme_name)* — is the middle form.
+    """
+    if spec is None:
+        return {"chain": [], "ordinal_within": []}
+    if isinstance(spec, str):
+        return {"chain": [spec], "ordinal_within": []}
+    if isinstance(spec, dict):
+        return {"chain": list(spec.get("chain") or []),
+                "ordinal_within": list(spec.get("ordinal_within") or [])}
+    return {"chain": list(spec), "ordinal_within": []}
+
+
+def _level_value(rec: dict, level, steps) -> Optional[str]:
+    """One level of the chain. A composite level resolves only if EVERY part is present —
+    a half-filled composite key would collide with every other half-filled one."""
+    fields = _fields_of(rec)
+    parts = [level] if isinstance(level, str) else list(level)
+    out = []
+    for name in parts:
+        f = fields.get(name)
+        v = normalize(f.get("value"), steps) if f else None
+        if not v:
+            return None
+        out.append(v)
+    return "|".join(out)
+
+
+def _identity(rec: dict, spec, steps, ordinal: Optional[int] = None) -> Optional[tuple]:
+    """Returns (identity, tier) where tier names WHICH rule resolved it, or None.
+
+    The tier travels with the record because the rules are not equally trustworthy. Accession
+    aligned 15/15 in the D-058 diagnostic where the name fallback aligned 0/15, and `ordinal`
+    is weaker still — it is positional, and position is not guaranteed stable across
+    independent passes. Anything aligned by ordinal is alignment the ensemble cannot vouch for,
+    so it is labelled rather than blended into the same number as an accession match.
+    """
+    s = _id_spec(spec)
+    for i, level in enumerate(s["chain"]):
+        v = _level_value(rec, level, steps)
+        if v:
+            tier = "primary" if i == 0 else f"fallback{i}"
+            return (v, tier)
+    if ordinal is not None and s["ordinal_within"]:
+        scope = _level_value(rec, s["ordinal_within"], steps)
+        if scope:
+            return (f"{scope}#ord{ordinal}", "ordinal")
+    return None
 
 
 def merge_passes(passes: list, identity_fields: Optional[dict] = None,
@@ -421,12 +487,33 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
     identity_fields = identity_fields or {}
 
     # Index every pass by (entity_type, normalized identity).
-    indexed, keys = [], []
+    indexed, keys, id_tiers = [], [], {}
     for records in passes:
         idx = {}
+        # Ordinal counts ONLY the records the chain could not identify, in source order within
+        # the scope — so the nth *unnamed* enzyme of an organism lines up with the nth unnamed
+        # one in another pass. Counting every record in scope instead makes the numbering
+        # depend on how many named records happened to precede it, which differs per pass:
+        # measured on PMC12723471, that produced 5 ordinal keys where 3 exist, 4 of them
+        # matched by a single pass. Ordinal is the weakest rule here even when correct, and it
+        # is labelled as such downstream so a disagreement under it can be read as a possible
+        # mis-pairing rather than as evidence.
+        seen_in_scope: dict = {}
         for rec in records or []:
             etype = rec.get("entity_type")
-            ident = _identity(rec, identity_fields.get(etype), steps)
+            spec = identity_fields.get(etype)
+            resolved = _identity(rec, spec, steps)          # chain only, no ordinal yet
+            if resolved is None:
+                s = _id_spec(spec)
+                scope = _level_value(rec, s["ordinal_within"], steps) \
+                    if s["ordinal_within"] else None
+                if scope is not None:
+                    ordinal = seen_in_scope.get((etype, scope), 0)
+                    seen_in_scope[(etype, scope)] = ordinal + 1
+                    resolved = _identity(rec, spec, steps, ordinal=ordinal)
+            ident = resolved[0] if resolved else None
+            if resolved:
+                id_tiers[(etype, ident)] = resolved[1]
             if ident is None:
                 # No identity field ratified for this type. Positional alignment across
                 # INDEPENDENT passes would be a coin flip, so it is only safe when the type
@@ -499,5 +586,13 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
 
     return {"records": merged, "ensemble": report, "k": k,
             "alignment": [{"entity_type": e, "identity": i,
-                           "found_by_passes": sum(1 for idx in indexed if (e, i) in idx)}
-                          for (e, i) in keys]}
+                           "found_by_passes": sum(1 for idx in indexed if (e, i) in idx),
+                           # WHICH rule matched these records to each other. Not decoration:
+                           # 'ordinal' means they were paired by order of appearance, which is
+                           # not guaranteed stable across independent passes, so a disagreement
+                           # under it may be a mis-pairing rather than a real disagreement.
+                           "identity_tier": id_tiers.get((e, i), "singleton")}
+                          for (e, i) in keys],
+            "identity_tiers": {t: sum(1 for (e, i) in keys
+                                      if id_tiers.get((e, i), "singleton") == t)
+                               for t in sorted({*id_tiers.values(), "singleton"})}}

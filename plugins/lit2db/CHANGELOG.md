@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.21.0 — 2026-07-27
+The headless wave driver, plus three defects the first real run exposed.
+
+- **`scripts/run_wave.py`** — spawns every agent itself and runs the spine in-process, so a
+  wave survives being left alone overnight. Resumes at the paper boundary, sleeps until the
+  stated reset when it hits a usage limit, records a failed pass instead of silently shrinking
+  k, and catalogues researcher-only questions to `QUESTIONS.jsonl` between waves.
+- **`ground_literature` handles multi-valued fields** — a list was stringified whole, so
+  `["(+)-δ-cadinol"]` scored 0.0 where the identical scalar scored 1.0. Every `list[...]` field
+  in a frozen schema was unable to auto-accept, silently (D-061).
+- **Dash confusables** — U+2010 HYPHEN and friends now fold to ASCII. NFKC does not touch them,
+  and one paper's mixed typesetting split a single enzyme into two database rows.
+- **Identity may be a fallback chain** — `accession, else (organism + name), else order of
+  appearance` — and the alignment records WHICH rule matched, because they are not equally
+  trustworthy (D-062).
+- **`project_cost` counts agent invocations, not tokens** — across a 2.7× spread in paper
+  length, per-pass cost was flat (correlation −0.14). Any token-proportional model is wrong in
+  a fixed direction (D-060). `one_read=True` reproduces the historical figures.
+- 343 → 371 tests.
+
 ## 0.20.0 — 2026-07-27
 Agent contracts may no longer direct an agent to call a tool it does not hold (D-059).
 

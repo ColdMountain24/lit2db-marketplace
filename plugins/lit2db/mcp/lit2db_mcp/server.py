@@ -105,10 +105,36 @@ def ground_literature(value: object, quote: str) -> dict:
 
     Does the extracted value actually appear in its verbatim quote — numerically (with a
     small relative tolerance) or as a normalized substring? Returns a c_grounded score in
-    [0,1]. This is intentionally the surface check; semantic support is the judge's call."""
+    [0,1]. This is intentionally the surface check; semantic support is the judge's call.
+
+    **Multi-valued fields ground PER ELEMENT.** A list used to be stringified whole, so
+    `["(+)-δ-cadinol"]` was compared as the literal `"['(+)-δ-cadinol']"` and scored 0.0 while
+    the identical scalar scored 1.0 — which meant every `list[str]` field in a frozen schema
+    was unable to auto-accept, silently, and it read as extractor failure rather than as a
+    missing code path. The score is the FRACTION of elements grounded, so a five-product list
+    with one unsupported entry lands at 0.8 and routes to repair instead of passing whole or
+    failing whole. This mirrors D-052, which already gave the ensemble per-element unanimity;
+    grounding simply never got the same treatment.
+    """
     q = (quote or "").strip()
     if not q:
         return {"c_grounded": 0.0, "mode": "no_quote"}
+    if isinstance(value, (list, tuple)):
+        if not value:
+            # An empty list is not a grounded value; it is the absence of one.
+            return {"c_grounded": 0.0, "mode": "empty_list"}
+        per = [_ground_scalar(v, q) for v in value]
+        score = sum(p["c_grounded"] for p in per) / len(per)
+        mode = ("list_match" if score == 1.0
+                else "list_absent" if score == 0.0 else "list_partial")
+        return {"c_grounded": score, "mode": mode,
+                "n_elements": len(per),
+                "ungrounded": [v for v, p in zip(value, per) if p["c_grounded"] < 1.0]}
+    return _ground_scalar(value, q)
+
+
+def _ground_scalar(value: object, q: str) -> dict:
+    """One value against one quote. The rule itself, so the list path cannot drift from it."""
     v_num = _norm_num(value)
     if v_num is not None:
         # numeric grounding: any number in the quote within 1% relative tolerance
