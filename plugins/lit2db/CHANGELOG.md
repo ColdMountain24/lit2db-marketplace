@@ -1,7 +1,51 @@
 # Changelog
 
 ## Unreleased
-Candidates can be confirmed beside the paragraph they came from.
+A verdict records which surface it was given on.
+
+Both review paths write the same `adjudications` table with the same three verdicts, so the
+calibration set is identical in kind. They do **not** apply the same conditions: the browser
+reviewer mechanically refuses `right`/`wrong` when a record's quote could not be put in front of
+the reviewer, while `/lit2db-review` states that rule in prose for an agent to honour. Two paths
+that can produce differently-distributed labels from one corpus — and nothing recorded which path
+a row came from, so the difference was unmeasurable rather than absent.
+
+- The tag rides on `adjudicator` rather than a new column, so **every verdict already collected
+  survives and reads as `unknown`**. Checked against the 24 real ones: pooled counts unchanged.
+- Tagging happens at each path's own boundary — the MCP tool tags `chat` because it *is* the
+  conversational surface — so a caller cannot forget it. Idempotent, because a double-tagged
+  value would split into its own bucket and silently halve a comparison.
+- `adjudications()` and `calibration_report` break the counts down by surface, and both command
+  files now instruct that the split be reported when both paths were used. A large gap in the
+  `cant_tell` share between columns means part of what was measured is how the question was put.
+
+## 0.48.0 — 2026-07-28
+Organism resolves to NCBI Taxonomy; candidates can be confirmed beside the paragraph they came from.
+
+**One commit, two unrelated changes.** `77d587f` is titled *"organism resolves to NCBI Taxonomy,
+additively (D-106)"* and also contains the entire browser reviewer below. The review work was
+written to be staged and not committed; a concurrent session in the same tree bumped both manifests
+and committed, sweeping in whatever was staged. The history is **deliberately not rewritten** — it
+was already pushed to the public repo `/plugin install` reads, so splitting it would mean
+force-pushing over history others may hold, to fix a cosmetic problem. This entry is the fix
+instead: the commit message stays wrong and the record here is right.
+
+### Organism resolves to an authority, additively (D-106)
+
+Nine of twenty-four adjudicated records were one organism written two ways — the largest single
+class of researcher attention in the queue. Measured against NCBI Taxonomy on those exact strings:
+**0 of 4 resolve as stored, 4 of 4 with the strain stripped.** The authority is fine; a species
+field carrying the strain is not. This is D-058 repeating — *"a field that conflates two things
+cannot agree"* — which that decision fixed for `source_organism` and the compound spec
+re-introduced.
+
+- `taxonomy.py` mirrors `structures.py`. It **adds** `organism_taxid` and `organism_taxon_rung`
+  and rewrites nothing, so the 183-paper wave running against the frozen spec stays valid;
+  splitting species properly remains a Stage-8 amendment.
+- Wired into `run_wave`, not only into an agent — `resolve_structure` shipped interactive-only
+  and never ran on 133 records.
+
+### Confirming candidates beside the paper
 
 `/lit2db-review` collects the labels this project spent weeks calling a blocker, and it collects
 them through `AskUserQuestion` — which can show a reviewer the quote and **nothing around it**.
@@ -46,38 +90,63 @@ and no viewer — `full.txt` is the coordinate system, so a char offset is the w
   nothing said there were three more. Each value now links to its own sentence and the count is
   stated. The synthetic demo could not have shown this: its records carry one field each.
 
-- **A verdict now records WHICH SURFACE it was given on, because the two do not ask the same
-  question.** Both write the same table with the same three verdicts, so the calibration set is
-  identical in kind — but the browser mechanically refuses `right`/`wrong` when a record's quote
-  could not be shown, while `/lit2db-review` states that rule in prose for an agent to honour.
-  Two paths that can produce differently-distributed labels from one corpus, and nothing recorded
-  which path a row came from, so the difference was unmeasurable rather than absent. The tag
-  rides on `adjudicator` rather than a new column, so **every verdict already collected survives
-  and reads as `unknown`** — checked against the 24 real ones, whose pooled counts are unchanged.
-  `adjudications()` and `calibration_report` now break the counts down by surface; a large gap in
-  the `cant_tell` share between columns means part of what was measured is how the question was
-  put. Tagging happens at each path's own boundary — the MCP tool tags `chat` because it *is* the
-  conversational surface — so it cannot be forgotten by a caller.
+- **A source's on-disk address gained one definition (D-107).** `write_store` folded a `source_id`
+  into a directory name inline; the reviewer is the first reader that has to find those directories
+  again, so the fold is now `store.store_dirname()` and both call it. The ids need it —
+  `DOI:10.1002/anie.201501119` is filed as `DOI_10.1002_anie.201501119`. Had two copies drifted, a
+  reader would report *"this paper was never stored"*, which is a legitimate and common state here,
+  so the bug would have read as an access problem and gone uninvestigated.
 
-### What commit `77d587f` actually contains
+## 0.47.0 — 2026-07-28
+One reading, with completeness standing in for agreement (D-103).
 
-Most of the above shipped inside **`77d587f` — "v0.48.0 — organism resolves to NCBI Taxonomy,
-additively (D-106)"**, whose message describes only the other half of it. This work was written to
-be staged and not committed; a concurrent session working in the same tree bumped both manifests to
-0.48.0 and committed, and its commit swept in whatever was staged. So one commit carries two
-unrelated changes:
+**V-001 accepted: D-053's mixed-model k=3 ensemble is retired.** The head-to-head D-100 required
+was done by re-slicing pass1 of the existing run — same 55 papers, same prompt, same stores, both
+arms under an identical condition set, zero model calls:
 
-- organism authority resolution — `src/lit2db/taxonomy.py`, `tests/test_taxonomy.py`, `run_wave.py`
-- the browser reviewer — `scripts/review_ui.{py,html}`, `src/lit2db/review.py`,
-  `tests/test_review_ui.py`, `commands/lit2db-review-ui.md`, and the `store_dirname` extraction
+```
+k=1 opus   106 proposed  56 accepted  22 correct  39% precision  14.7% recall
+k=3 mixed  127 proposed  61 accepted  20 correct  33% precision  13.3% recall
+```
 
-**The history is deliberately not rewritten.** `77d587f` was already pushed to the public
-marketplace repo that `/plugin install` reads, so splitting it would mean force-pushing over
-history other people may hold — a real risk taken to fix a cosmetic one. This note is the fix
-instead: the commit message stays wrong and the record here is right.
+Non-inferiority at a third of the extraction cost, which is 71% of the headline token figure.
+**The margin is 2 records; the ruling does not claim k=1 is better.**
 
-Two things this leaves open, neither introduced by it: the log still has no `0.46.0`, `0.47.0` or
-`0.48.0` heading while both manifests read 0.48.0; and `pyproject.toml` still reads `0.5.0`.
+- `default_route` gains `require_ensemble`, false only when the operator declared a single-pass
+  run. `gate.single_pass_problems` **refuses** a k=1 that has not set a `min_populated_fields` to
+  take agreement's place — checked in preflight before the first model call, and in `replay.py`,
+  because replay is the instrument this project reaches for first and one it silently tolerates
+  gets trusted.
+- The substitution replaces **agreement, not evidence**: grounding is still required to
+  auto-accept, and a test pins it.
+- Measured: the held-out arm wrote **nothing** at 21 gate settings before this. It now writes 33
+  records at 70% whole-record precision, 14.5% recall.
+- 640 → 645 tests. Demo contrast intact.
+
+## 0.46.0 — 2026-07-28
+Completeness is a gate condition, and the calibration set accumulates.
+
+Three things the "calibrate the verification layer" rung needed, none of which was the accept bar.
+
+- **`min_populated_fields` (D-097)** — a RECORD-level completeness condition, default 0 so shipped
+  behaviour is byte-identical. Generalises `required_fields` from *which* to *how many*. Not a
+  weight: a whole-record fact inside a per-field mean is the shape error D-079 removed the judge
+  for. Threaded through `gate_reasons` → `output.upsert` → `gate_upsert` → the PreToolUse hook →
+  `run_wave` → `replay`.
+- **The adjudication loop (D-098)** — the `adjudications` table, `record_adjudication`,
+  `calibration_report`, `/lit2db-review`. Three verdicts (right / wrong / cant_tell) because 60% of
+  the target compounds are named only in text nobody can obtain, and scoring those as wrong would
+  calibrate the bar against a library subscription. **A human verdict cannot write a record:** not
+  in `WRITE_TOOLS`, different table.
+- **`calibration.py`** — precision per signal bucket with n and a Wilson interval. Reports; never
+  picks a threshold.
+- **D-101** — the PreToolUse hook now applies ALL the predicate's conditions, not four of six.
+  `review_lane` and `required_fields` had never been passed, so the two enforcement points had
+  been applying different rules, untested, since v0.27.0.
+- Also: `marketplace.json` had been advertising 0.22.0 while the plugin was at 0.45.0 — **23
+  releases of drift** in the one manifest an installer reads, with nothing referencing that file.
+  Fixed, pinned by a test, and the test confirmed to fail when the drift is reintroduced.
+- 608 → 640 tests. Demo contrast intact.
 
 ## 0.45.0 — 2026-07-28
 k=1 no longer awards itself a free agreement score.

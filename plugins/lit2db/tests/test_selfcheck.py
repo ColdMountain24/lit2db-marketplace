@@ -6,7 +6,7 @@ no error anywhere. The trap is that a version read from the repo you are editing
 about the copy the session is running, so these tests exercise the CLAUDE_PLUGIN_ROOT path,
 which is the only one that describes the live install.
 """
-import json, pathlib, subprocess, sys
+import json, pathlib, re, subprocess, sys
 
 import pytest
 
@@ -101,6 +101,25 @@ def test_the_marketplace_manifest_advertises_the_version_that_is_here():
     assert entries[0]["version"] == MANIFEST_VERSION, (
         f"marketplace.json advertises {entries[0]['version']} but the plugin is "
         f"{MANIFEST_VERSION} — an installer would get the version this file names")
+
+
+def test_pyproject_names_the_same_version_as_the_manifests():
+    """The THIRD version number, and it drifted for the same reason the second one did.
+
+    `pyproject.toml` sat at **0.5.0 while the plugin was at 0.48.0** — forty-three releases —
+    because nothing compared it to anything. That is exactly the shape the test above was written
+    for at v0.46.0, one file over: a version guarded by nobody is not a version, it is a
+    decoration, and the next person to read it is misled rather than merely uninformed.
+
+    Parsed by hand rather than with tomllib so this keeps working on the 3.10 the project still
+    supports; the line is unambiguous enough that a regex is honest here.
+    """
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+    assert m, "pyproject.toml declares no version"
+    assert m.group(1) == MANIFEST_VERSION, (
+        f"pyproject.toml says {m.group(1)} but the plugin manifest says {MANIFEST_VERSION} — "
+        f"plugin.json is the version of record, so this one has drifted")
 
 
 @pytest.mark.parametrize("missing", ["manifest", "server"])
