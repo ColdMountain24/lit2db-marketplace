@@ -50,7 +50,16 @@ class StudyDesign(str, Enum):
 
 
 class EvidenceTier(BaseModel):
-    """The six-dimension ordinal. Kept in lockstep with protocol Step C axis 3."""
+    """The six-dimension ordinal. Kept in lockstep with protocol Step C axis 3.
+
+    **NOT POPULATED BY THE SHIPPED PIPELINE.** `FieldValue.evidence_tier` is Optional and every
+    record this scaffold produces leaves it `None`: nothing in extraction, grounding, the
+    ensemble or the gate reads or writes it. It is kept because it is a well-formed contract a
+    project can choose to fill from its own extraction prompt, and because `None` is an honest
+    answer — but no document may describe it as something the pipeline emits, and no downstream
+    consumer should expect it. Stating that is the whole point: an optional field nobody fills is
+    fine, an optional field everyone assumes is filled is the defect this plugin keeps shipping.
+    """
     study_design: StudyDesign
     directness: Literal["direct", "indirect", "unknown"] = "unknown"
     consistency: Literal["consistent", "inconsistent", "single", "unknown"] = "unknown"

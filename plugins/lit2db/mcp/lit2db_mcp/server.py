@@ -57,6 +57,13 @@ from lit2db.store import (  # noqa: E402
     build_from_jats, find_spans, quote_at, section_of, write_store,
 )
 from lit2db.gate import gate_reasons, resolve_threshold  # noqa: E402
+from lit2db.dedup import dedupe as _dedupe  # noqa: E402
+from lit2db.entity import build_index as _build_index, explain as _explain  # noqa: E402
+from lit2db.screening import screen_corpus as _screen_corpus  # noqa: E402
+from lit2db.grounding import (ground_literature as _ground,  # noqa: E402
+                              validate_mapping as _validate_mapping)
+from lit2db.output import query as _query, upsert as _upsert  # noqa: E402
+from lit2db.scoring import score_and_route as _score_and_route  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
@@ -88,99 +95,28 @@ def validate_record(record: dict) -> dict:
 # ------------------------------------------------------------------------------------
 # Stage 4b — grounding (literature: span-entailment proxy; structured: mapping validation)
 # ------------------------------------------------------------------------------------
-def _norm_num(s: str):
-    """Pull the first numeric token out of a string, tolerant of unicode minus / commas."""
-    m = re.search(r"[-+]?\d[\d,]*\.?\d*", str(s).replace("\u2212", "-"))
-    if not m:
-        return None
-    try:
-        return float(m.group(0).replace(",", ""))
-    except ValueError:
-        return None
-
-
 @mcp.tool()
 def ground_literature(value: object, quote: str) -> dict:
     """Deterministic span-grounding for the literature adapter (Stage 4b, naive baseline).
 
-    Does the extracted value actually appear in its verbatim quote — numerically (with a
-    small relative tolerance) or as a normalized substring? Returns a c_grounded score in
-    [0,1]. This is intentionally the surface check; semantic support is the judge's call.
-
-    **Multi-valued fields ground PER ELEMENT.** A list used to be stringified whole, so
-    `["(+)-δ-cadinol"]` was compared as the literal `"['(+)-δ-cadinol']"` and scored 0.0 while
-    the identical scalar scored 1.0 — which meant every `list[str]` field in a frozen schema
-    was unable to auto-accept, silently, and it read as extractor failure rather than as a
-    missing code path. The score is the FRACTION of elements grounded, so a five-product list
-    with one unsupported entry lands at 0.8 and routes to repair instead of passing whole or
-    failing whole. This mirrors D-052, which already gave the ensemble per-element unanimity;
-    grounding simply never got the same treatment.
+    Thin wrapper over `lit2db.grounding.ground_literature`. Multi-valued fields ground PER
+    ELEMENT: a list used to be stringified whole, so `["(+)-d-cadinol"]` was compared as the
+    literal `"['(+)-d-cadinol']"` and scored 0.0 while the identical scalar scored 1.0.
     """
-    q = (quote or "").strip()
-    if not q:
-        return {"c_grounded": 0.0, "mode": "no_quote"}
-    if isinstance(value, (list, tuple)):
-        if not value:
-            # An empty list is not a grounded value; it is the absence of one.
-            return {"c_grounded": 0.0, "mode": "empty_list"}
-        per = [_ground_scalar(v, q) for v in value]
-        score = sum(p["c_grounded"] for p in per) / len(per)
-        mode = ("list_match" if score == 1.0
-                else "list_absent" if score == 0.0 else "list_partial")
-        return {"c_grounded": score, "mode": mode,
-                "n_elements": len(per),
-                "ungrounded": [v for v, p in zip(value, per) if p["c_grounded"] < 1.0]}
-    return _ground_scalar(value, q)
-
-
-def _ground_scalar(value: object, q: str) -> dict:
-    """One value against one quote. The rule itself, so the list path cannot drift from it."""
-    v_num = _norm_num(value)
-    if v_num is not None:
-        # numeric grounding: any number in the quote within 1% relative tolerance
-        nums = [float(x.replace(",", "")) for x in
-                re.findall(r"[-+]?\d[\d,]*\.?\d*", q.replace("\u2212", "-"))]
-        for n in nums:
-            denom = max(abs(v_num), 1e-9)
-            if abs(n - v_num) / denom <= 0.01:
-                return {"c_grounded": 1.0, "mode": "numeric_match", "matched": n}
-        return {"c_grounded": 0.0, "mode": "numeric_absent", "quote_numbers": nums}
-    # string grounding: normalized substring
-    sv = re.sub(r"\s+", " ", str(value).strip().lower())
-    sq = re.sub(r"\s+", " ", q.lower())
-    return {"c_grounded": 1.0 if sv and sv in sq else 0.0,
-            "mode": "string_match" if sv and sv in sq else "string_absent"}
+    return _ground(value, quote)
 
 
 @mcp.tool()
 def validate_mapping(value: object, field_spec: dict) -> dict:
-    """Mapping validation for the structured adapter (Stage 4b): type/range/enum conformance.
+    """Structured-adapter grounding (Stage 4b): type / range / enum conformance.
 
-    field_spec is a FieldSpec-shaped dict (type, valid_range, enum). Passing = c_grounded 1.0.
-    A value outside the ratified valid_range is NOT dropped — it is flagged so the researcher
-    can recalibrate the bound (the segregate-don't-drop discipline)."""
-    ftype = field_spec.get("type")
-    reasons = []
-    ok = True
-    if ftype in ("float", "int"):
-        v = _norm_num(value)
-        if v is None:
-            ok, _ = False, reasons.append("not numeric")
-        else:
-            vr = field_spec.get("valid_range")
-            if vr and not (vr[0] <= v <= vr[1]):
-                ok = False
-                reasons.append(f"value {v} outside valid_range {tuple(vr)}")
-    enum = field_spec.get("enum")
-    if enum and str(value) not in enum:
-        ok = False
-        reasons.append(f"value {value!r} not in enum {enum}")
-    return {"c_grounded": 1.0 if ok else 0.0, "ok": ok, "flags": reasons}
+    Thin wrapper over `lit2db.grounding.validate_mapping`. A value outside the ratified
+    valid_range is NOT dropped — it is flagged so the researcher can recalibrate the bound
+    (the segregate-don't-drop discipline).
+    """
+    return _validate_mapping(value, field_spec)
 
 
-# ------------------------------------------------------------------------------------
-# Stage 1 — the offset-anchored store (the coordinate system every offset refers to)
-# ------------------------------------------------------------------------------------
 @mcp.tool()
 def build_store(xml: str, source_id: str, root_dir: str = "", meta: dict = {}) -> dict:
     """Parse JATS full-text XML into the Stage-1 offset-anchored store (Stage 1).
@@ -305,81 +241,15 @@ def score_and_route(record: dict, weights_key: str = "numeric",
                     review_lane: list | None = None) -> dict:
     """Composite confidence per field (blueprint 5.2) + per-field and record-level routing.
 
-    Each field's confidence_components are combined with the ratified weight vector over
-    PRESENT signals only (graceful degradation). Fields route via default_route; a record
-    with ANY unparseable/mapping-invalid field, or no fields, is QUARANTINED (record-level
-    dead-letter, distinct from field-level human_review). Returns the annotated record +
-    a composite record confidence (min over fields = weakest-link).
-
-    **This is SELECTION and it is TWO mechanical signals** — grounding and cross-pass agreement
-    — not a composite over six verification signals (D-079). The adversarial judge is not scored
-    here; it vetoes what survives, at the gate. Anything this function returns is a statement
-    about what the pipeline could check by itself.
-
-    `ensemble_k` / `ensemble_min_agreeing` set the agreement bar as "how many of how many
-    passes must agree" — the units the signal can actually take, since `c_ensemble` is
-    quantized to j/k. Leave both 0 for the shipped default (unanimity at k=3). Setting them
-    is a ratified per-project decision: it is the researcher's tolerance for extraction
-    disagreement, not a tuning constant the scaffold owns.
-
-    Set `ensemble_k` alone to change ensemble size while KEEPING unanimity — the policy
-    follows k rather than pinning an integer that would quietly become a majority. k must be
-    >= 2; k=1 is refused because a single pass agrees with itself and would assert agreement
-    nobody measured."""
-    rec = ExtractedRecord.model_validate(record)
-    weights = DEFAULT_WEIGHTS.get(weights_key, DEFAULT_WEIGHTS["numeric"])
-    # ensemble_min_agreeing=0 means "unset" -> unanimity at whatever k is, so raising k
-    # tightens the bar instead of silently loosening it to a majority.
-    min_agreement = (required_agreement(ensemble_k, ensemble_min_agreeing or None)
-                     if ensemble_k else 1.0)
-    lane = set(review_lane or ())
-    field_confs = []
-    for fv in rec.fields:
-        c = fv.confidence_components
-        if c is not None:
-            try:
-                fv.confidence = c.composite(weights)
-            except ValueError:
-                fv.confidence = None
-        fv.route = default_route(fv, min_agreement)
-        # A ratified review-lane field is scored and routed like any other — its confidence
-        # stays visible — but it is EXCLUDED from the record composite, because the composite
-        # is the weakest link among the fields the record will actually be written with. A
-        # field the researcher has already ruled can never auto-accept is not one of those,
-        # and including it makes the record's score a measure of the field we agreed to hold.
-        if fv.field_name not in lane:
-            field_confs.append(fv.confidence if fv.confidence is not None else 0.0)
-
-    # record-level quarantine: no fields, or any field with zero grounding AND no signals
-    if not rec.fields:
-        rec.route = RouteDecision.quarantine
-        rec.failure_reason = FailureReason.incoherent
-    composite = min(field_confs) if field_confs else 0.0
-    out = json.loads(rec.model_dump_json())
-    out["_composite_confidence"] = composite
-    out["_review_lane"] = sorted(lane & {fv.field_name for fv in rec.fields})
-    out["_routing_summary"] = {
-        r.value: sum(1 for fv in rec.fields if fv.route == r) for r in RouteDecision
-    }
-    return out
+    Thin wrapper. The implementation is `lit2db.scoring.score_and_route` — see that module for
+    why it is library code and not server code.
+    """
+    return _score_and_route(record, weights_key, ensemble_k, ensemble_min_agreeing, review_lane)
 
 
 # ------------------------------------------------------------------------------------
 # Stage 7 — the HARD write-gate + storage
 # ------------------------------------------------------------------------------------
-def _conn(db_path: str | None = None) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path or DB_PATH)
-    con.execute("""CREATE TABLE IF NOT EXISTS records(
-        record_id TEXT PRIMARY KEY,
-        entity_type TEXT,
-        composite_confidence REAL,
-        route TEXT,
-        source_status TEXT,
-        payload_json TEXT,
-        written_at TEXT)""")
-    return con
-
-
 @mcp.tool()
 def gate_upsert(record: dict, composite_confidence: float,
                 db_path: str = "", autoaccept: float = -1.0,
@@ -393,45 +263,20 @@ def gate_upsert(record: dict, composite_confidence: float,
           every confidence signal scores the span the extractor chose to surface),
       (5) `record.judge_verdict` is 'supported' — the adversarial judge's VETO (D-079). Not
           configurable, and absence blocks: a record nobody challenged has not passed its
-          challenge, exactly as an unsearched value is not a clean one.
+          challenge, exactly as an unsearched value is not a clean one,
+      (6) the record_id is not already held by a DIFFERENT record.
     Set require_contradiction_search=True to also block values whose source was never
     searched for counter-evidence: "we did not look" is not "we looked and it was clean".
     'deny' wins. A denied record is NOT written; its reasons are returned for routing to the
-    human-review or quarantine queue. This is the deterministic gate that makes the ratified
-    quality bar mechanical rather than advisory.
+    human-review or quarantine queue.
 
-    The conditions themselves live in `lit2db.gate` — the same predicate the PreToolUse hook
-    applies, so the two enforcement points cannot drift apart."""
-    thr = autoaccept if autoaccept >= 0 else AUTOACCEPT
-    rec = ExtractedRecord.model_validate(record)  # shape first: an unparseable record cannot be gated
-    lane = set(review_lane or [])
-    reasons = gate_reasons(json.loads(rec.model_dump_json()), composite_confidence, thr,
-                           require_contradiction_search=require_contradiction_search,
-                           review_lane=lane)
-    if reasons:
-        return {"written": False, "decision": "deny", "reasons": reasons,
-                "route_to": "human_review_or_quarantine_queue"}
-
-    # A ratified review-lane field is HELD, not written. Stripping it here is what makes the
-    # exemption in `gate_reasons` safe: the field stops blocking the row precisely because it
-    # is not part of the row. Writing it while exempting it from the checks would be the worst
-    # of both — unverified prose in the database, under a passing gate.
-    held = [fv for fv in rec.fields if fv.field_name in lane]
-    if held:
-        rec = rec.model_copy(update={"fields": [fv for fv in rec.fields
-                                                if fv.field_name not in lane]})
-        if not rec.fields:
-            return {"written": False, "decision": "deny",
-                    "reasons": ["every field is in the review lane — nothing left to write"],
-                    "route_to": "human_review_or_quarantine_queue"}
-    con = _conn(db_path or None)
-    src_status = "active"
-    con.execute("INSERT OR REPLACE INTO records VALUES (?,?,?,?,?,?,?)",
-                (rec.record_id, rec.entity_type, composite_confidence, "auto_accept",
-                 src_status, rec.model_dump_json(), datetime.now(timezone.utc).isoformat()))
-    con.commit(); con.close()
-    return {"written": True, "decision": "allow", "record_id": rec.record_id,
-            "held_for_review": [fv.field_name for fv in held]}
+    Thin wrapper. The conditions live in `lit2db.gate` — the same predicate the PreToolUse hook
+    applies, so the two enforcement points cannot drift apart — and the write in
+    `lit2db.output`.
+    """
+    return _upsert(record, composite_confidence, db_path or DB_PATH,
+                   autoaccept if autoaccept >= 0 else AUTOACCEPT,
+                   require_contradiction_search, review_lane)
 
 
 # ------------------------------------------------------------------------------------
@@ -622,15 +467,53 @@ def check_retraction(doi: str, timeout_s: float = 10.0) -> dict:
 @mcp.tool()
 def db_query(db_path: str = "", limit: int = 50) -> dict:
     """Read the ML-ready view: auto-accepted, active-source records only (Stage 7 output)."""
-    con = _conn(db_path or None)
-    rows = con.execute(
-        "SELECT record_id, entity_type, composite_confidence, source_status, written_at "
-        "FROM records WHERE route='auto_accept' AND source_status='active' "
-        "ORDER BY written_at DESC LIMIT ?", (limit,)).fetchall()
-    con.close()
-    return {"n": len(rows), "records": [
-        {"record_id": r[0], "entity_type": r[1], "composite_confidence": r[2],
-         "source_status": r[3], "written_at": r[4]} for r in rows]}
+    return _query(db_path or DB_PATH, limit=limit)
+
+
+@mcp.tool()
+def resolve_entities(records: list, identity: list = [], fallback: list = [],
+                     explain_text: bool = False) -> dict:
+    """Stage 5 — group per-source records into canonical entities and report conflicts.
+
+    Wired here because it had NOT been. `entity.py` shipped with tests, a dedicated
+    `entity-resolver-agent`, prose in five command/agent files, and a CODEMAP line claiming it
+    was "wired into the MCP server" — while nothing imported it. A whole declared pipeline stage
+    was unreachable, and `tests/test_declarations.py` caught it on its first run.
+
+    It CLASSIFIES disagreement across sources; it never resolves it. Which of two conflicting
+    values is right is researcher substance.
+    """
+    kw = {}
+    if identity:
+        kw["identity"] = tuple(identity)
+    if fallback:
+        kw["fallback"] = tuple(fallback)
+    index = _build_index(list(records), **kw)
+    return {"index": index, "explain": _explain(index) if explain_text else None}
+
+
+@mcp.tool()
+def screen_corpus(sources: list, require_any: list = [], exclude_any: list = [],
+                  require_all: list = []) -> dict:
+    """Corpus-build screen (T22): keep sources whose text mentions the ratified entity terms.
+
+    The terms are RATIFIED INPUT, never inferred here. Screening is measured to be lossy —
+    LLM4SCREENLIT reports raw-accuracy screening losing 63% of relevant studies — so this is a
+    deterministic term match whose recall a researcher can reason about, and what it drops is
+    reported rather than discarded silently.
+    """
+    return _screen_corpus(list(sources), require_any=tuple(require_any),
+                          exclude_any=tuple(exclude_any), require_all=tuple(require_all))
+
+
+@mcp.tool()
+def dedupe_corpus(papers: list) -> dict:
+    """Corpus-build dedup (T16): collapse corrections/errata onto the paper they correct.
+
+    Identifiers where they exist, a flagged near-duplicate where they do not — never a silent
+    merge on title similarity alone.
+    """
+    return _dedupe(list(papers))
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ is then untestable and any measurement you take is of the wrong artifact. The fi
 `/plugin marketplace update`, reinstall, then `/reload-plugins`.
 
 This is not ceremony. A stale marketplace clone once left v0.1.0 installed against a v0.9.0
-repo: 6 MCP tools instead of 13, an `extractor-agent` holding only `Read`, and no error
+repo: 6 MCP tools instead of 16, an `extractor-agent` holding only `Read`, and no error
 anywhere. It cost two sessions and was invisible the whole time.
 
 **Then** call the lit2db MCP `db_query` tool and summarize the ML-ready view: how many records passed

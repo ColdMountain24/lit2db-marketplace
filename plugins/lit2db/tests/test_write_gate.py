@@ -122,12 +122,22 @@ def test_hook_fails_closed_on_unparseable_payload():
 
 # --- threshold precedence: call arg > env > default ------------------------------------
 def test_threshold_precedence():
-    rec, comp = _scored("A_clean_regression_value")          # composite ~0.974
-    assert _decide(_payload(rec, comp), env={"LIT2DB_AUTOACCEPT": "0.99"}) == "deny"
-    assert _decide(_payload(rec, comp, autoaccept=0.99)) == "deny"
+    """The thresholds are DERIVED from the record's measured composite, not hardcoded.
+
+    This test used to say `# composite ~0.974` and compare against 0.99. That number was a
+    property of a six-signal weight profile, so shipping the two-signal profile the pipeline
+    actually produces moved the composite to 1.000 and the test failed — for a reason that had
+    nothing to do with threshold precedence, which is what it exists to check. A test that
+    encodes a value it does not control breaks on every unrelated change and teaches you to
+    stop reading it.
+    """
+    rec, comp = _scored("A_clean_regression_value")
+    above, below = comp + 0.01, comp - 0.01
+    assert _decide(_payload(rec, comp), env={"LIT2DB_AUTOACCEPT": str(above)}) == "deny"
+    assert _decide(_payload(rec, comp, autoaccept=above)) == "deny"
     # the call's own argument wins over the environment
-    assert _decide(_payload(rec, comp, autoaccept=0.5),
-                   env={"LIT2DB_AUTOACCEPT": "0.99"}) == "allow"
+    assert _decide(_payload(rec, comp, autoaccept=below),
+                   env={"LIT2DB_AUTOACCEPT": str(above)}) == "allow"
     assert resolve_threshold({}, {}) == 0.95                 # conservative placeholder
 
 

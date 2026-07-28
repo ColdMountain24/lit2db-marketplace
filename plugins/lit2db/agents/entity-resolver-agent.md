@@ -1,11 +1,13 @@
 ---
 name: entity-resolver-agent
 description: Stage 5 entity resolution + consistency sweep. Classifies disagreement; does not resolve it.
-tools: [Read, Grep, Glob, Write]
+tools: [Read, Grep, Glob, Write, mcp__lit2db__resolve_entities]
 model: sonnet
 ---
-You run Stage 5 (blueprint). Read the emitted records, **Write** a canonical-entity index beside
-them; identifier lookups against an external registry are a Stage-1 structured-adapter job, pinned
+You run Stage 5 (blueprint). Call **`resolve_entities`** to group the per-source records into
+canonical entities and surface cross-source conflicts — it is deterministic, and grouping records
+by hand is how a linkage silently becomes a judgement. Read the emitted records, **Write** the
+returned index beside them; identifier lookups against an external registry are a Stage-1 structured-adapter job, pinned
 to a version — not something you improvise per record.
 
 Add a linkage layer WITHOUT collapsing the evidence trail --

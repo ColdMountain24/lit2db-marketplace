@@ -129,16 +129,31 @@ class ExtractedRecord(BaseModel):
 # would be calibration, and calibration is the researcher's to ratify, not the scaffold's to
 # invent while removing something else.
 #
-# HONESTY NOTE, unresolved: on real runs only `c_grounded` and `c_ensemble` ever materialize.
-# `c_verbal`, `c_consistency` and `c_logprob` were measured across 86 records / 670 scored fields
-# and fired on none, so the profile declares five weights and produces two. That is why the
-# achievable score lattice is as coarse as it is. The two honest exits — produce those signals,
-# or declare a two-signal profile — are a researcher call, tracked on the ladder, not settled here.
+# THE SHIPPED PROFILE IS TWO SIGNALS, because two signals are what the pipeline produces.
+#
+# It used to declare six, then five. `c_verbal`, `c_consistency` and `c_logprob` were measured
+# across 86 records / 670 scored fields and fired on **none** — so 0.35 of the declared weight
+# mass, including the second-largest weight, described a contribution that never existed. The
+# renormalization over present signals meant the numbers still came out "right", which is exactly
+# why it survived: an inert weight is invisible until someone counts.
+#
+# Weights for signals nothing emits are the same defect as an agent declaring a tool it does not
+# hold, and this scaffold has now shipped both. The profile states what runs. Producing the other
+# three remains open and is a researcher call — but it will be a change that ADDS a weight
+# alongside the code that populates it, which is the only order that cannot lie.
+#
+# `UNPRODUCED_SIGNALS` is not decoration: `tests/test_declarations.py` asserts nothing here
+# weights one of them, so re-adding a weight without the producing code fails the suite.
+UNPRODUCED_SIGNALS = ("c_verbal", "c_consistency", "c_logprob")
+
 DEFAULT_WEIGHTS = {
-    "numeric": {"c_grounded": 0.35, "c_verbal": 0.20, "c_ensemble": 0.15,
-                "c_consistency": 0.10, "c_logprob": 0.05},
-    "inferential": {"c_ensemble": 0.25, "c_grounded": 0.15,
-                    "c_verbal": 0.15, "c_consistency": 0.15, "c_logprob": 0.00},
+    "numeric": {"c_grounded": 0.35, "c_ensemble": 0.15},
+    # Inferential values lean harder on cross-pass agreement: a value the extractor reasoned to
+    # rather than read is exactly where independent readings diverge, and where a lexical
+    # grounding check is the weakest evidence. Same two signals, different ratio — the ratio is
+    # carried over unchanged from the six-signal profile rather than re-invented, because
+    # re-weighting is calibration and calibration is the researcher's to ratify.
+    "inferential": {"c_grounded": 0.15, "c_ensemble": 0.25},
 }
 
 # --- The ensemble agreement bar -------------------------------------------------------

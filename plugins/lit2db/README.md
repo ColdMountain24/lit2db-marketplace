@@ -1,7 +1,7 @@
-# lit2db — literature & structured data → ML-ready databases
+# lit2db — scientific literature → ML-ready databases
 
 A Claude Code plugin for building **auditable, versioned, ML-ready databases** from
-scientific literature and structured data sources — for *any* domain. You supply the research
+scientific literature — for *any* domain. You supply the research
 question, the entities of interest, and the domain substance; the agents handle the structural
 and mechanical labor (ingestion, extraction, verification, routing, output).
 
@@ -45,22 +45,27 @@ Local development:
 | **Skill** (`skills/scope-elicitation/`) | The Stage-0.5 protocol: ten narrowing axes, the ratification ledger, the propose-structure / ratify-substance boundary. |
 | **Commands** (`commands/`) | `/lit2db-new-project`, `/lit2db-extract` (one source end-to-end), `/lit2db-verify`, `/lit2db-status`. |
 | **Contracts** (`src/lit2db/contracts/`, `gate.py`) | Pydantic formalization of the ledger invariant, provenance record, evidence tier, confidence composite, and routing, plus the write-gate predicate the hook and the MCP tool both apply. **Domain-blind.** |
-| **Scaffolding** (`src/lit2db/{stages,adapters,tools}/`) | Deliberate stubs — see below. |
 
-### What is real, and what is scaffolding
+### One artifact: what runs is what ships
 
-Everything in the table above is implemented and exercised by the demo and the test suite,
-**except** three subpackages that ship as intentional, typed scaffolding:
+Until v0.33.0 three subpackages shipped as typed scaffolding — `stages/`, `adapters/`, `tools/` —
+on the argument that the contract *is* the design. **They have been deleted.** The argument was
+wrong in a specific and costly way: `stages/` declared itself "the domain-INVARIANT control flow"
+while eight of its nine functions had empty bodies and nothing imported the package. The control
+flow really lived in `scripts/run_wave.py`, which reached scoring and gating by loading the MCP
+*server file* as a module to borrow functions out of it.
 
-| Package | Ships | Does not ship |
-|---|---|---|
-| `src/lit2db/stages/` | The nine-stage control flow as named, typed functions; `stage_6_route` is real. | The other stage bodies (`...`). Orchestration currently lives in the agents and commands. |
-| `src/lit2db/adapters/` | The `SourceAdapter` ABC — discover / acquire / emit / check_status — and the literature + structured subclasses that declare their downstream path. | The method bodies. Note the JATS path no longer needs them: `lit2db.store` turns Europe PMC full-text XML into the offset-anchored store directly, and GROBID is required only for PDFs. |
-| `src/lit2db/tools/` | An interface record only — signatures for `grobid_parse`, `nli_entails`, `db_upsert`, … **Not callable tools**; never list these in an agent's `tools:`. | The bodies, each raising `NotImplementedError` naming the service to wire. (`check_retraction` graduated to a real MCP tool.) |
+So the library was a specification and a script was the system, and the project's first-week
+defect stream was almost entirely the gap between them: an agent declaring tools it did not hold,
+weights for signals nothing produced, a stage recorded as "found nothing" that never ran. One bug
+class, and it recurred because each fix re-described the specification instead of closing the gap.
 
-They are kept rather than deleted because the contract *is* the design: the adapter interface
-and the stage boundaries are what make the scaffold domain-invariant, and they are what the
-self-updating-database work builds on. Nothing in the demo path depends on them.
+The pipeline now lives in the library — `lit2db.pipeline`, `lit2db.scoring`, `lit2db.grounding`,
+`lit2db.output` — and the MCP server and the headless driver are both thin callers of it. The
+structured-data adapter is **not implemented**; where this README once said "literature and
+structured data" as a product claim, it now says literature, because that is what exists.
+
+`tests/test_declarations.py` keeps it that way: the plugin may not claim what it does not do.
 
 ## The two-layer architecture
 
@@ -69,9 +74,11 @@ self-updating-database work builds on. Nothing in the demo path depends on them.
   domain content.
 - **Per-project instantiation** (`instantiation/<project>/`) — the *only* place domain substance
   lives, produced through the Stage-0.5 elicitation interview and gated by the ratification
-  ledger. Two source adapters converge at the verification layer: a **literature adapter**
-  (span-entailment grounding) and a **structured-data adapter** (mapping-validation grounding,
-  which bypasses extraction).
+  ledger. The verification layer is built for two source kinds and both grounding rules are
+  implemented — span grounding for literature (`ground_literature`) and mapping-validation for
+  structured records (`validate_mapping`). **Only the literature INGEST path exists today**:
+  `lit2db.store` turns Europe PMC full-text XML into an offset-anchored store, and there is no
+  equivalent that pulls from a structured database. Building one is real work, not a stub away.
 
 **A corpus is defined by the query that produced it, not by its name.** A literature spec
 will not freeze unless it records the **executable query verbatim** — traced to a ratified

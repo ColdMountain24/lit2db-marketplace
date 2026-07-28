@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.33.0 — 2026-07-27
+The library was a specification and a script was the system. Now there is one artifact.
+
+A root-cause review of the project's first-week defect stream found **one bug class, twelve
+instances**: a declaration not backed by the thing it names. An agent declaring tools it did not
+hold. Weights for three signals nothing produced. A corpus that was a name with no query. Schema
+fields marked researcher-ratified against ledger items that did not exist. A stage recorded as
+"found nothing" that had never run. An audit slice reporting three records having judged two.
+
+The structural cause: `src/lit2db/stages/` declared itself "the domain-INVARIANT control flow"
+with **eight of nine function bodies empty and nothing importing the package**, while the control
+flow really lived in `scripts/run_wave.py` — which reached scoring and gating by loading the MCP
+*server file* as a module to borrow functions out of it, in three separate places. Every fix
+re-described the specification to match the script, and **the declaring half was the half that
+shipped.**
+
+- **The pipeline moved into the library**: `lit2db.pipeline` (assemble, select, judge scheduling,
+  question catalogue), `lit2db.scoring`, `lit2db.grounding`, `lit2db.output`. The MCP server and
+  the headless driver are both thin callers now. `run_wave.py` 1208 → 777 lines and holds no
+  decision about a record; `server.py` 638 → 520.
+- **`stages/`, `tools/` and `adapters/` are deleted** — 154 lines and 18 `NotImplementedError`,
+  unreachable for the plugin's entire published life while README and CODEMAP presented them as
+  the architecture. **Deleting all three broke zero tests**, which is the proof.
+- **The weight profile ships two signals**, because two is what the pipeline produces. `c_verbal`,
+  `c_consistency` and `c_logprob` carried 0.35 of the declared mass and fired on none of 670
+  scored fields; renormalization over present signals meant the composite still looked right,
+  which is why it survived. The achievable lattice is unchanged — confirming they were inert.
+- **`EvidenceTier` says plainly that the pipeline does not populate it.**
+- **A colliding `record_id` is refused, not silently replaced.** `INSERT OR REPLACE` over ids that
+  are not unique (15 records under 11 ids on one paper; ids are per-source ordinals) would have
+  overwritten a row with no error and nothing in any artifact. Re-writing the same record stays
+  idempotent, so a resumed run is unaffected.
+- **The manifest no longer promises "structured data".** Structured *grounding* exists
+  (`validate_mapping`); structured *ingest* never has.
+- **`tests/test_declarations.py` — the plugin may not claim what it does not do.** No unreachable
+  module, no unimplemented body, no empty function, no weight for an unproduced signal, no MCP
+  tool unreachable from a command or agent, no manifest claim without an implementation, no id
+  collision able to replace a row. The write-gate made quality mechanical rather than advisory;
+  this does the same for the plugin's self-description.
+  - **It found a thirteenth instance on its first run:** `entity.py` — a whole declared pipeline
+    stage, with tests and its own `entity-resolver-agent` — which CODEMAP claimed was "wired into
+    the MCP server" and which nothing imported. Now exposed as `resolve_entities`, alongside
+    `screen_corpus` and `dedupe_corpus`, which were in the same state. 13 → 16 MCP tools.
+- **Verified behaviour-preserving on 257 real records** from 16 saved paper-runs, scored and
+  gated under four verdict conditions before and after: identical written sets, every write at
+  exactly 1.0000.
+
+520 → 532 tests.
+
 ## 0.32.0 — 2026-07-27
 The adversarial judge stops pretending to be a score.
 

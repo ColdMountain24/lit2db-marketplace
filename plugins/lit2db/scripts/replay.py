@@ -38,11 +38,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 from lit2db.ensemble import merge_passes                       # noqa: E402
 
-# The driver's own assembly step, reused rather than reimplemented: it resolves each quote to a
-# character offset and builds the provenance the gate requires. Replaying through the REAL path
-# means a change to it is covered too — a parallel copy here would drift and validate nothing.
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import run_wave                                                # noqa: E402
+# The REAL pipeline, imported from the library rather than reimplemented or borrowed off a
+# script. Replaying through the real path means a change to it is covered here too — a parallel
+# copy would drift and validate nothing. Until v0.33.0 this imported `run_wave` (a driver) and
+# loaded the MCP server file as a module to reach scoring and gating; both are library calls now.
+from lit2db.pipeline import VERDICT_TO_STATE, assemble          # noqa: E402
+from lit2db.output import upsert                                # noqa: E402
+from lit2db.scoring import score_and_route                      # noqa: E402
 
 PLUGIN = pathlib.Path(__file__).resolve().parent.parent
 
@@ -84,7 +86,7 @@ def load_passes(pdir: pathlib.Path) -> list:
     return out
 
 
-def replay_one(pdir: pathlib.Path, cfg: dict, srv) -> dict:
+def replay_one(pdir: pathlib.Path, cfg: dict) -> dict:
     """Merge -> score -> gate for one paper's saved passes. Never raises."""
     name = pdir.name
     passes = load_passes(pdir)
@@ -118,7 +120,7 @@ def replay_one(pdir: pathlib.Path, cfg: dict, srv) -> dict:
                     if v.get("verdict"):
                         judge[rid] = v["verdict"]
     try:
-        records, dropped = run_wave.assemble(name, cfg, merged, hunt)
+        records, dropped = assemble(name, cfg, merged, hunt)
     except Exception as exc:                                   # noqa: BLE001
         row.update(status="ASSEMBLE FAILED", error=f"{type(exc).__name__}: {exc}")
         return row
@@ -127,7 +129,7 @@ def replay_one(pdir: pathlib.Path, cfg: dict, srv) -> dict:
     # human_review, reached now by the condition that was always doing the work.
     for rec in records:
         v = judge.get(rec["record_id"])
-        rec["judge_verdict"] = run_wave.VERDICT_TO_STATE.get(v, "not_run") if v else "not_run"
+        rec["judge_verdict"] = VERDICT_TO_STATE.get(v, "not_run") if v else "not_run"
     row["assembled"] = len(records)
     row["dropped"] = len(dropped)
 
@@ -138,15 +140,15 @@ def replay_one(pdir: pathlib.Path, cfg: dict, srv) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             db = str(pathlib.Path(tmp) / "replay.db")
             for rec in records:
-                sr = srv.score_and_route(record=rec, weights_key=cfg["weights_key"],
+                sr = score_and_route(record=rec, weights_key=cfg["weights_key"],
                                          ensemble_k=len(cfg["models"]),
                                          ensemble_min_agreeing=0,
                                          review_lane=cfg["review_lane"])
                 comp = sr.get("_composite_confidence") or 0.0
-                g = srv.gate_upsert(record=sr, composite_confidence=comp, db_path=db,
-                                    autoaccept=cfg["auto_accept_threshold"],
-                                    require_contradiction_search=False,
-                                    review_lane=cfg["review_lane"])
+                g = upsert(record=sr, composite_confidence=comp, db_path=db,
+                           autoaccept=cfg["auto_accept_threshold"],
+                           require_contradiction_search=False,
+                           review_lane=cfg["review_lane"])
                 if g.get("written"):
                     written += 1
                 for reason in (g.get("reasons") or []):
@@ -176,19 +178,12 @@ def main() -> int:
     if a.config:
         cfg.update(json.loads(pathlib.Path(a.config).read_text()))
 
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "lit2db_mcp_server", PLUGIN / "mcp" / "lit2db_mcp" / "server.py")
-    srv = importlib.util.module_from_spec(spec)
-    with contextlib.redirect_stdout(io.StringIO()):            # the server chatters on import
-        spec.loader.exec_module(srv)
-
     runs = find_runs(pathlib.Path(a.runs).resolve())
     print(f"replaying {len(runs)} saved paper-runs — no model calls\n")
 
     rows, failures = [], 0
     for pdir in runs:
-        row = replay_one(pdir, cfg, srv)
+        row = replay_one(pdir, cfg)
         rows.append(row)
         if "FAILED" in row["status"]:
             failures += 1
