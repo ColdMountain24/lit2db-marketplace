@@ -61,7 +61,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from lit2db.accounting import STREAMS, RunAccount             # noqa: E402
 from lit2db.ensemble import merge_passes                      # noqa: E402
 from lit2db.fuse import Fuse, FuseExceeded                    # noqa: E402
-from lit2db.output import record_candidate, upsert            # noqa: E402
+from lit2db.output import record_candidate, upsert
+from lit2db.structures import resolve_structure, structure_fields            # noqa: E402
 from lit2db.scoring import score_and_route                    # noqa: E402
 # THE PIPELINE ITSELF NOW LIVES IN THE LIBRARY. It used to live here, and scoring/gating were
 # reached by loading the MCP server file as a module — so the code that ran and the code that
@@ -84,6 +85,44 @@ _gate_lock = threading.Lock()
 def log(msg: str) -> None:
     with _log_lock:
         print(f"[{dt.datetime.now():%H:%M:%S}] {msg}", flush=True)
+
+
+
+def _resolve_structures_for(scored: list, cfg: dict, pdir: pathlib.Path) -> None:
+    """Attach resolved structure fields to each record, in place. Never raises.
+
+    Failure is a NON-ANSWER, not an exception: an unresolvable name simply contributes no
+    structure fields (`structure_fields` returns []), which is what D-083 requires. Resolutions
+    are cached per name within a paper because the same compound is often reported twice.
+    """
+    seen: dict = {}
+    log_path = pdir / "structures.json"
+    audit = []
+    for s in scored:
+        rec = s["record"]
+        name = next((f.get("value") for f in rec.get("fields", [])
+                     if f.get("field_name") == "compound_name"), None)
+        if not name:
+            continue
+        if name not in seen:
+            try:
+                seen[name] = resolve_structure(name)
+            except Exception as exc:                      # noqa: BLE001 — never kill a paper
+                seen[name] = {"resolved": False, "why": f"{type(exc).__name__}: {exc}"}
+            time.sleep(0.2)                                # public endpoint, be polite
+        res = seen[name]
+        try:
+            extra = structure_fields(res, rec["fields"][0]["provenance"]["source_id"],
+                                     cfg["producing_process"])
+        except Exception:                                  # noqa: BLE001
+            extra = []
+        rec.setdefault("fields", []).extend(extra)
+        audit.append({"record_id": rec["record_id"], "name": name,
+                      "resolved": bool(res.get("resolved")),
+                      "inchikey": res.get("inchikey"), "why": res.get("why")})
+    if audit:
+        log_path.write_text(json.dumps(audit, indent=1))
+
 
 
 # ---------------------------------------------------------------------------------------
@@ -478,6 +517,19 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     # gets judged; the GATE runs only now, with every verdict in hand, so a paper whose judge
     # stage failed above returns `incomplete` with nothing in the database.
     apply_verdicts(scored, verdicts, judged=set(pick["to_judge"]))
+
+    # STRUCTURE RESOLUTION (D-084), and it runs HERE on purpose: after scoring, before the gate.
+    # It is a deterministic PubChem lookup, not a model call, so nothing about it needs an agent
+    # -- the headless driver simply never reached it, and four of the compound schema's ten
+    # fields were absent from every record of the first arm run as a result.
+    #
+    # After scoring because D-083 ruled an unresolved name costs the record nothing: a structure
+    # lookup must not be able to change whether a record is accepted. Before the gate so the
+    # fields are on the row that gets written. The compound NAME keeps its literature
+    # provenance; these carry `StructuredProvenance` pointing at the authority record.
+    if cfg.get("resolve_structures", True):
+        _resolve_structures_for(scored, cfg, pdir)
+
     written = 0
     for s in scored:
         with _gate_lock:

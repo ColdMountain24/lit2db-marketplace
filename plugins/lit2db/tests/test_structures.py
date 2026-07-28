@@ -100,3 +100,33 @@ def test_formula_is_never_used_as_identity_evidence():
     formula_only = {"PropertyTable": {"Properties": [
         {"CID": 1, "MolecularFormula": "C15H24"}, {"CID": 2, "MolecularFormula": "C15H24"}]}}
     assert resolve_structure("a sesquiterpene", fetch=_fetch(formula_only))["resolved"] is False
+
+
+# --- "we never asked" is not "we asked and it does not know" (D-094) -------------------------
+
+def test_a_transport_failure_is_not_reported_as_a_non_match():
+    """The bug this pins was total and silent: a python.org build with no system trust store
+    failed TLS on every call, and the fetcher's fail-closed `None` made that indistinguishable
+    from PubChem not knowing the name. A whole wave would have read as "none of these compounds
+    are in PubChem" — plausible for a novel-compound database, and completely wrong."""
+    from lit2db.structures import _TRANSPORT, resolve_structure
+    r = resolve_structure("pentalenene", fetch=lambda url, t=20.0: _TRANSPORT)
+    assert r["resolved"] is False
+    assert r.get("unreachable") is True
+    assert "not asked" in r["why"]
+
+
+def test_a_real_non_match_is_still_a_real_finding():
+    """The authority answered and does not know the name — which for a database of NEW compounds
+    is often the interesting outcome, not a failure."""
+    from lit2db.structures import resolve_structure
+    r = resolve_structure("pentalenene", fetch=lambda url, t=20.0: None)
+    assert r["resolved"] is False
+    assert not r.get("unreachable")
+    assert r["why"] == "no match in authority"
+
+
+def test_the_default_fetcher_trusts_a_real_ca_bundle():
+    """Not a network test — just that a context is constructible, which is what failed."""
+    from lit2db.structures import _ssl_context
+    assert _ssl_context() is not None

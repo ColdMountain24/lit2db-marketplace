@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.41.0 — 2026-07-28
+Structures get resolved by the pipeline that actually runs — and the resolver could not reach PubChem.
+
+D-084 ratified resolve-never-generate, v0.35.0 built it, and `resolve_structure` was reachable
+only from the interactive `extractor-agent`. **The headless driver never called it**, so `smiles`,
+`inchikey`, `molecular_formula` and `authority_compound_id` — 4 of the compound schema's 10 fields
+— were absent from all 133 records of the first arm run.
+
+- Wired into `run_wave.py` **after scoring, before the gate**. It is a deterministic PubChem
+  lookup, not a model call, so nothing about it needed an agent. After scoring because D-083
+  ruled an unresolved name costs the record nothing: a lookup must not change whether a record is
+  accepted. Per-paper cache, `structures.json` audit trail, never raises.
+- **Wiring it exposed a total, silent failure in the resolver itself.** Python builds from
+  python.org carry no system trust store, so every HTTPS call failed certificate verification —
+  and the fetcher's fail-closed `None` reported that as "authority unreachable or no match".
+  Every compound, every time, indistinguishable from PubChem simply not knowing the name.
+- **The two are now held apart** (D-094): a transport failure returns `unreachable=True` and says
+  "not asked, not answered"; a real 404 says "no match in authority". They are opposite findings
+  — one is a run to retry, the other is evidence a compound is genuinely new — and a whole wave
+  of the first would otherwise read as the second, which for a novel-compound database is a
+  plausible-looking and completely wrong conclusion.
+- 605 → 608 tests.
+
 ## 0.40.0 — 2026-07-28
 The fuse counts what the cost report counts.
 

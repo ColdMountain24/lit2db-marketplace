@@ -30,6 +30,7 @@ defect `tests/test_declarations.py` exists to prevent. Add it after one live ver
 from __future__ import annotations
 
 import json
+import ssl
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -38,14 +39,43 @@ PUBCHEM = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 _PROPS = "CanonicalSMILES,InChI,InChIKey,MolecularFormula,MolecularWeight,ExactMass"
 
 
-def http_get_json(url: str, timeout_s: float = 20.0):
-    """The default fetcher. Returns parsed JSON, or None on any failure — never raises."""
+# Sentinel: the request never completed, as opposed to the authority saying "no match".
+_TRANSPORT = object()
+
+
+def _ssl_context():
+    """A context that trusts a real CA bundle.
+
+    Python builds from python.org ship no system trust store, so every HTTPS call here failed
+    certificate verification — and because the fetcher fails closed to `None`, that surfaced as
+    "authority unreachable or no match" for EVERY compound. Silent, total, and indistinguishable
+    from PubChem simply not knowing the name. Found the moment structure resolution was wired
+    into the headless driver.
+    """
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "lit2db/structure-resolver"})
-        with urllib.request.urlopen(req, timeout=timeout_s) as r:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:                                          # noqa: BLE001
+        return ssl.create_default_context()
+
+
+def http_get_json(url: str, timeout_s: float = 20.0):
+    """The default fetcher. Returns parsed JSON, `None` for no-match, `_TRANSPORT` on failure.
+
+    The two are held apart deliberately. A 404 from PubChem means "this authority does not know
+    that name" — a real answer. A DNS failure, a TLS error or a timeout means "we never asked",
+    and reporting that as a non-match would let a run with no network at all look exactly like a
+    run whose every compound was unknown. Same distinction the retraction check and the
+    negative-data policy already make.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "lit2db/structure-resolver"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s, context=_ssl_context()) as r:
             return json.load(r)
-    except Exception:                                          # noqa: BLE001 — fails closed
-        return None
+    except urllib.error.HTTPError:
+        return None                                            # the authority answered: no match
+    except Exception:                                          # noqa: BLE001 — we never asked
+        return _TRANSPORT
 
 
 def _unresolved(name: str, why: str, **extra) -> dict:
@@ -73,12 +103,18 @@ def resolve_structure(name: str, fetch=http_get_json, timeout_s: float = 20.0) -
         return _unresolved(name, "empty name")
 
     url = f"{PUBCHEM}/compound/name/{urllib.parse.quote(n)}/property/{_PROPS}/JSON"
-    blob = fetch(url, timeout_s) if fetch is not http_get_json else fetch(url, timeout_s)
+    blob = fetch(url, timeout_s)
+    if blob is _TRANSPORT:
+        # WE NEVER ASKED. Held apart from a real non-match because they are opposite findings:
+        # this one is a run failure to retry, and a whole wave of it (a bad TLS trust store, no
+        # network) would otherwise read as "none of these compounds are in PubChem" — which for
+        # a novel-compound database is a *plausible-looking* and completely wrong conclusion.
+        return _unresolved(n, "authority unreachable — not asked, not answered",
+                           unreachable=True)
     if not blob:
-        # Unreachable and not-found are BOTH non-answers here, but they are different facts and
-        # the caller records which: one is a run failure to retry, the other is a real finding
-        # about the compound (very likely novel, which is the interesting case).
-        return _unresolved(n, "authority unreachable or no match")
+        # The authority answered and does not know this name. A real finding, and for this
+        # schema often the interesting one: a genuinely new compound is not in PubChem yet.
+        return _unresolved(n, "no match in authority")
 
     props = (blob.get("PropertyTable") or {}).get("Properties") or []
     if not props:
