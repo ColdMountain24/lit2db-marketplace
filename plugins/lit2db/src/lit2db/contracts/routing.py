@@ -107,6 +107,13 @@ class ExtractedRecord(BaseModel):
     # record-level routing (D1). If quarantined, failure_reason is set.
     route: Optional[RouteDecision] = None
     failure_reason: Optional[FailureReason] = None
+    # D-067's record-level review lane needs to say WHY, in words a reviewer can act on, and
+    # `failure_reason` is an enum of five machine states that cannot carry that. The pipeline
+    # used to join the reasons into `failure_reason` anyway, which raised a ValidationError on
+    # EVERY review-lane record — so the lane declared since v0.27.0 had never once survived
+    # contact with a record that used it. Found on the first live run whose extractor set
+    # `review_only`, where it killed a whole paper and its four other records.
+    review_reasons: list[str] = Field(default_factory=list)
     # The adversarial judge's verdict, PER RECORD (D-036: the judge reads a reconstructed claim,
     # which is a property of the record, not of one field). Before D-079 this arrived as a
     # `c_judge` float copied onto every field — a record-level fact wearing a field-level shape,

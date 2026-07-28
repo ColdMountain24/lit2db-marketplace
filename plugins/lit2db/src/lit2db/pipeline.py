@@ -239,8 +239,13 @@ def assemble(paper: str, cfg: dict, merged: dict, hunt: dict) -> tuple[list, lis
             # record keeps every field and its full provenance so the reviewer sees what was
             # extracted, and the reasons say why it is in front of them.
             if rec.get("review_only"):
+                # `route` is what BLOCKS (gate.BLOCKING_ROUTES); the reasons are for the human
+                # holding the record. They go in `review_reasons`, not `failure_reason` — that
+                # is a five-value enum, and joining free text into it raised on every
+                # review-lane record, taking the whole paper down with it.
                 r_out["route"] = "human_review"
-                r_out["failure_reason"] = "; ".join(rec.get("review_reasons") or ["review-only"])
+                r_out["review_reasons"] = [str(x) for x in
+                                           (rec.get("review_reasons") or ["review-only"])]
             out.append(r_out)
     return out, dropped
 

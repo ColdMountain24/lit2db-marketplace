@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.39.0 — 2026-07-28
+The record-level review lane had never once worked.
+
+D-067's lane shipped in **v0.27.0** and was exercised for the first time tonight, on the
+validation-arm run, when an extractor marked a record `review_only`. The pipeline joined its
+reasons into `failure_reason` — a five-value enum — so pydantic raised on **every** review-lane
+record, and the exception took down the whole paper along with its four other records.
+
+- `ExtractedRecord.review_reasons: list[str]` carries the words a reviewer needs;
+  `failure_reason` stays the enum it always was. The fix is a new carrier, not a loosened
+  contract — free text still cannot enter the enum, and a test pins that.
+- **The lane keeps its teeth.** `route="human_review"` is what actually blocks
+  (`gate.BLOCKING_ROUTES`); the reasons were never doing that work, which is why the bug was
+  invisible — the lane looked implemented because the blocking half was.
+- It had never fired because no earlier extractor prompt led a model to set `review_only`. A
+  declared mechanism whose FIRST real use is a crash is the same shape as the twelve instances
+  the v0.33.0 audit catalogued, found the only way this class ever gets found: by running it.
+- 594 → 599 tests.
+
 ## 0.38.0 — 2026-07-28
 A record id is qualified by its source, and replay can finally see the class that needed it.
 
