@@ -2,6 +2,7 @@
   "A_clean_regression_value": {
     "record_id": "demoA",
     "entity_type": "enzyme_substrate_pair",
+    "judge_verdict": "supported",
     "fields": [
       {
         "field_name": "km_value",
@@ -31,6 +32,8 @@
   "B_condition_multiplexed": {
     "record_id": "demoB",
     "entity_type": "enzyme_substrate_pair",
+    "judge_verdict": "unsupported",
+    "judge_note": "two turnover numbers are reported for two acid concentrations; the record states one as if it were unconditional",
     "fields": [
       {
         "field_name": "kcat_value",
@@ -60,6 +63,7 @@
   "C_retracted_source": {
     "record_id": "demoC",
     "entity_type": "enzyme_substrate_pair",
+    "judge_verdict": "supported",
     "fields": [
       {
         "field_name": "km_value",

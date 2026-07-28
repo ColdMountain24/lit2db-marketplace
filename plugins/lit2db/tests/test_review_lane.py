@@ -34,16 +34,20 @@ PROV = {
 }
 
 
-def field(name, value, grounded, ensemble, judge=1.0):
+def field(name, value, grounded, ensemble):
     return {"field_name": name, "value": value, "provenance": dict(PROV),
-            "confidence_components": {"c_grounded": grounded, "c_ensemble": ensemble,
-                                      "c_judge": judge},
+            "confidence_components": {"c_grounded": grounded, "c_ensemble": ensemble},
             "contradiction_search": "clean"}
 
 
 def record():
-    """The shape actually measured: strong verifiable fields, one unverifiable prose field."""
-    return {"record_id": "ts1", "entity_type": "terpene_synthase", "fields": [
+    """The shape actually measured: strong verifiable fields, one unverifiable prose field.
+
+    `judge_verdict` is supported so these tests isolate the REVIEW LANE. The judge is a veto
+    since D-079, so without it every write below would deny for an unrelated reason.
+    """
+    return {"record_id": "ts1", "entity_type": "terpene_synthase",
+            "judge_verdict": "supported", "fields": [
         field("enzyme_name", "pentalenene synthase", 1.0, 1.0),
         field("accession", "WP_1", 1.0, 1.0),
         field("substrate", "FPP", 1.0, 1.0),
@@ -91,6 +95,7 @@ def test_the_held_field_is_not_written(tmp_path):
 def test_a_record_that_is_entirely_review_lane_is_denied(tmp_path):
     """Stripping everything would otherwise write an empty row that looks like a finding."""
     rec = {"record_id": "ts2", "entity_type": "terpene_synthase",
+           "judge_verdict": "supported",
            "fields": [field("function", "does something", 0.0, 0.333)]}
     out = score(rec, lane=["function"])
     g = S.gate_upsert(record=out, composite_confidence=1.0, db_path=str(tmp_path / "t.db"),

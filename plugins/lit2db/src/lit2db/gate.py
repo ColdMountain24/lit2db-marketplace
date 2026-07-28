@@ -12,6 +12,11 @@ Defense in depth, not redundancy: the hook covers agent-issued calls (including 
 write tool the agent invents), the tool covers every other caller — scripts, tests, a
 headless refresh run, a future storage backend.
 
+`gate_reasons` is composed of two halves — `selection_reasons` (the mechanical conditions) and
+`judge_veto_reasons` (the adversarial judge, D-079). The driver calls the first half alone to
+decide which records are worth spending a judge call on; only the composed whole is ever applied
+to a write. See `selection_reasons` for why that is a decomposition rather than a bypass flag.
+
 Deliberately STDLIB-ONLY and dict-shaped. The hook is spawned as `python3 <file>` under
 whatever interpreter the user's machine provides, which may have no pydantic installed;
 shape validation stays in the Pydantic contracts and this module only applies the ratified
@@ -30,6 +35,26 @@ DEFAULT_AUTOACCEPT = 0.95
 
 # Routes that must never reach the ML-ready view (blueprint 6 + ratified addition D1).
 BLOCKING_ROUTES = ("quarantine", "human_review")
+
+# The ONLY adversarial-judge verdict that clears the gate (D-079). Everything else — including
+# the absence of a verdict — blocks. See `judge_veto_reasons`.
+JUDGE_CLEARS = "supported"
+
+# Why a record failed its adversarial check, in the words a reviewer needs. The two groups are
+# kept apart deliberately: the first is a JUDGEMENT that stands and can be audited, the second is
+# a RUN FAILURE. Collapsing them is how a paper once got marked done with 77 records whose judge
+# had never been invoked.
+_VETO_STRUCK = {
+    "unsupported": "struck out by the adversarial judge: the source does not support the claim",
+    "partial": "struck out by the adversarial judge: partial — the core claim holds but part of "
+               "it over-reaches the evidence",
+}
+_VETO_UNCHALLENGED = {
+    "not_run": "never challenged by the adversarial judge (not_run) — not judged is not "
+               "supported, exactly as not searched is not clean",
+    "unparseable": "the adversarial judge replied but no verdict could be read (unparseable); "
+                   "the raw response is in the run's judge/ artifacts",
+}
 
 # Tools that write to the output DB, by bare name (see `tool_basename`).
 WRITE_TOOLS = ("gate_upsert", "db_upsert")
@@ -106,9 +131,54 @@ def resolve_threshold(tool_input=None, env=None, default: float = DEFAULT_AUTOAC
     return default
 
 
-def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
-                 require_contradiction_search: bool = False, review_lane=()):
-    """Every reason this record must NOT be written. An empty list means the write passes.
+def judge_veto_reasons(record):
+    """The adversarial judge's veto, alone. Empty list means the judge cleared this record.
+
+    D-079. The judge used to be a `c_judge` term at weight 0.15 inside the confidence mean,
+    which described it as one contributing signal among six. It never behaved like one: a
+    unanimous, fully-grounded record scored 1.000 unjudged and 1.000 judged-supported, so the
+    verdict could only ever LOWER the number, never raise it. That is a veto. It is now written
+    as one, and applied where the other disqualifying facts are applied.
+
+    Only `supported` clears. `partial` blocks too, and that is load-bearing rather than strict:
+    under the old mean a PARTIAL verdict scored 0.885 against a 0.95 bar, i.e. it already
+    blocked. If the veto tolerated it, taking `c_judge` out of the mean would have quietly
+    LOOSENED the gate while the change was being described as behaviour-preserving.
+
+    Absence blocks as well, for the reason `contradiction_search` already blocks on `not_run`:
+    a record nobody challenged has not passed its challenge. Fails closed on a missing or
+    unrecognized value — an unknown verdict word is treated as no verdict, never as a pass.
+    """
+    if not isinstance(record, dict):
+        return ["record is not an object"]
+    v = _enum_value(record.get("judge_verdict"))
+    v = str(v).strip().lower() if v is not None else "not_run"
+    if v == JUDGE_CLEARS:
+        return []
+    note = record.get("judge_note")
+    detail = f" — {note}" if isinstance(note, str) and note.strip() else ""
+    if v in _VETO_STRUCK:
+        return [_VETO_STRUCK[v] + detail]
+    if v in _VETO_UNCHALLENGED:
+        return [_VETO_UNCHALLENGED[v]]
+    return [f"unrecognized adversarial-judge verdict {v!r} — treated as no verdict, which "
+            f"blocks; a value this gate cannot read must never be read as approval"]
+
+
+def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
+                      require_contradiction_search: bool = False, review_lane=()):
+    """Every reason this record fails SELECTION — the whole gate except the judge's veto.
+
+    Split out of `gate_reasons` for one caller: the wave driver, which needs to know who
+    survives selection so it can spend an adversarial read only on those (plus a ratified random
+    audit slice of the rejected, so the veto's reject-side behaviour stays measurable). Judging
+    everything first and selecting afterwards is what made 84% of judge calls unable to affect
+    any outcome.
+
+    **There is no way to reach the write path through this function.** `gate_upsert` and the
+    PreToolUse hook both call `gate_reasons`, which is this plus the veto, unconditionally. A
+    boolean argument on the gate would have been the smaller diff and the wrong shape: the one
+    predicate behind two enforcement points must not grow a way to be told to skip a condition.
 
     The ratified conditions, all of which must hold:
       1. composite_confidence >= the auto-accept threshold,
@@ -190,3 +260,20 @@ def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOA
                 reasons.append(f"field '{name}' counter-evidence search "
                                f"{searched or 'not_run'} — not searched is not clean")
     return reasons
+
+
+def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
+                 require_contradiction_search: bool = False, review_lane=()):
+    """Every reason this record must NOT be written. An empty list means the write passes.
+
+    THE write predicate — the one both enforcement points call (`gate_upsert` and the PreToolUse
+    hook). Selection plus the adversarial judge's veto, composed here so the two can never be
+    applied in different combinations by different callers.
+
+    Fails CLOSED: a malformed record, an absent composite, a field with no provenance, or a
+    record the judge never cleared all deny. The gate's whole value is that it cannot be talked
+    past.
+    """
+    return (selection_reasons(record, composite_confidence, autoaccept,
+                              require_contradiction_search, review_lane)
+            + judge_veto_reasons(record))

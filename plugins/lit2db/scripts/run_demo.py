@@ -6,8 +6,12 @@ gate, exactly the tools the MCP server exposes, and prints the routing outcome f
 
 The adversarial judge is a DIFFERENT model in production (verifier-judge-agent) — by default a
 different model in the SAME family, never described as cross-family verification (D-041). Here
-its verdict is carried in each fixture's `c_judge` component so the demo is deterministic and
-offline: A/C judge-supported (1.0), B judge-ambiguous (0.0).
+its verdict is carried on each fixture as `judge_verdict` so the demo is deterministic and
+offline: A/C supported, B unsupported.
+
+The judge is a VETO, not a score (D-079): it is applied AFTER the confidence composite decides
+what survives, and it can only strike a record out. B is denied twice over, and both denials are
+printed — that is the point rather than a redundancy.
 
 Usage:  python3 scripts/run_demo.py
 """
@@ -48,12 +52,13 @@ def main():
             g = ground(fv["value"], q)
             fv["confidence_components"]["c_grounded"] = g["c_grounded"]
             print(f"  2. ground '{fv['field_name']}' : c_grounded={g['c_grounded']} ({g['mode']})")
-        judge = rec["fields"][0]["confidence_components"].get("c_judge")
-        print(f"  3. adversarial judge (diff. model, same family) : c_judge={judge}"
-              + ("  <- SUPPORTED" if judge and judge >= 0.5 else "  <- AMBIGUOUS (flag)"))
         scored = score_route(rec)
         comp = scored["_composite_confidence"]
-        print(f"  4. score_and_route : composite={comp:.3f}  routing={scored['_routing_summary']}")
+        print(f"  3. score_and_route : composite={comp:.3f}  routing={scored['_routing_summary']}")
+        print(f"       (grounding + cross-pass agreement only — the judge is not a term here)")
+        verdict = rec.get("judge_verdict", "not_run")
+        print(f"  4. adversarial judge (diff. model, same family) : {verdict}"
+              + ("  <- clears the veto" if verdict == "supported" else "  <- VETO, struck out"))
         # rebuild a record dict carrying the per-field routes score_and_route assigned
         gated = gate(scored, comp, db_path=dbpath)
         if gated["written"]:
@@ -68,8 +73,9 @@ def main():
     print(f"ML-ready view (auto-accepted, active-source only): {ml['n']} record(s)")
     for r in ml["records"]:
         print(f"   {r['record_id']}  {r['entity_type']}  conf={r['composite_confidence']:.3f}")
-    print("\nExpected: only demoA is written. demoB denied (judge-ambiguous -> human_review); "
-          "demoC denied (retracted source). Nothing wrong is silently in the DB.")
+    print("\nExpected: only demoA is written. demoB denied (thin agreement AND struck out by the "
+          "judge);\ndemoC denied (retracted source, despite a supported verdict). Nothing wrong "
+          "is silently in the DB.")
 
 if __name__ == "__main__":
     main()

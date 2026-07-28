@@ -118,10 +118,16 @@ def replay_one(pdir: pathlib.Path, cfg: dict, srv) -> dict:
                     if v.get("verdict"):
                         judge[rid] = v["verdict"]
     try:
-        records, dropped = run_wave.assemble(name, cfg, merged, judge, hunt)
+        records, dropped = run_wave.assemble(name, cfg, merged, hunt)
     except Exception as exc:                                   # noqa: BLE001
         row.update(status="ASSEMBLE FAILED", error=f"{type(exc).__name__}: {exc}")
         return row
+    # Saved verdicts become the record-level veto state (D-079). A record the saved run never
+    # judged stays `not_run`, which BLOCKS — the same answer the old spine gave it by routing to
+    # human_review, reached now by the condition that was always doing the work.
+    for rec in records:
+        v = judge.get(rec["record_id"])
+        rec["judge_verdict"] = run_wave.VERDICT_TO_STATE.get(v, "not_run") if v else "not_run"
     row["assembled"] = len(records)
     row["dropped"] = len(dropped)
 
@@ -201,9 +207,9 @@ def main() -> int:
           f"{sum(r['merged'] for r in ok)} records, {sum(r['written'] for r in ok)} would write")
     if judged < len(ok):
         print(f"\nNOTE: {len(ok) - judged} of {len(ok)} runs saved no judge verdicts, so their "
-              f"records\ncarry no c_judge and route to human_review. A LOW 'would write' here is "
-              f"an\nartifact of replaying un-judged artifacts, NOT a gate regression. Runs from\n"
-              f"v0.24.0 onward persist verdicts and replay with them.")
+              f"records\nreplay as judge_verdict=not_run, which the gate VETOES (D-079). A LOW "
+              f"'would write'\nhere is an artifact of replaying un-judged artifacts, NOT a gate "
+              f"regression. Runs\nfrom v0.24.0 onward persist verdicts and replay with them.")
 
     agg: dict = {}
     for r in ok:

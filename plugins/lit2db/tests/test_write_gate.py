@@ -133,7 +133,7 @@ def test_threshold_precedence():
 
 # --- the predicate itself ---------------------------------------------------------------
 def test_gate_denies_a_record_with_no_fields():
-    assert gate_reasons({"record_id": "x", "fields": []}, 1.0) == ["record carries no fields"]
+    assert "record carries no fields" in gate_reasons({"record_id": "x", "fields": []}, 1.0)
 
 
 def test_gate_denies_a_field_without_provenance():

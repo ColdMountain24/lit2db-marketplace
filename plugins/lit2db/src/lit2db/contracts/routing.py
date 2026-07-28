@@ -58,6 +58,28 @@ class ContradictionSearch(str, Enum):
     found = "found"
 
 
+class JudgeVerdict(str, Enum):
+    """The adversarial judge's answer — an ORDINAL STATE, not a probability (D-079).
+
+    Only `supported` clears the gate. The same distinction `ContradictionSearch` draws applies
+    here and for the same reason: a record nobody challenged has not passed its challenge.
+    `not_run` and `unparseable` are kept apart because they are different facts about the run —
+    a stage that never executed is a run to retry, a stage that executed and replied unusably is
+    a permanent, auditable denial (retrying it loops forever).
+    """
+    not_run = "not_run"                # never invoked
+    unparseable = "unparseable"        # invoked, replied, no verdict could be read
+    supported = "supported"
+    partial = "partial"                # the core claim holds, something over-reaches
+    unsupported = "unsupported"
+
+
+# The judge's wire vocabulary is upper-case; the contract's is lower-case. One place to convert.
+VERDICT_FROM_WIRE = {"SUPPORTED": JudgeVerdict.supported,
+                     "PARTIAL": JudgeVerdict.partial,
+                     "UNSUPPORTED": JudgeVerdict.unsupported}
+
+
 class FieldValue(BaseModel):
     field_name: str
     value: object
@@ -66,7 +88,11 @@ class FieldValue(BaseModel):
     confidence: Optional[float] = None
     confidence_components: Optional[ConfidenceComponents] = None
     route: Optional[RouteDecision] = None
-    is_inferential: bool = False       # inferential fields get a stricter judge bar
+    # Marks a value the extractor INFERRED rather than read off the page. It no longer selects a
+    # stricter judge bar — since D-079 the veto is uniform, because "the core is right but
+    # something over-reaches" disqualifies a mechanical value exactly as it disqualifies an
+    # inferred one. It survives as a per-value label the judge prompt and the reviewer both use.
+    is_inferential: bool = False
     # Counter-evidence (Stage 4c'). Deliberately NOT folded into confidence_components: a
     # weighted mean lets four confident signals average away one real contradiction. A
     # credible contradiction is a BLOCKING condition at the gate, like a retracted source.
@@ -81,15 +107,37 @@ class ExtractedRecord(BaseModel):
     # record-level routing (D1). If quarantined, failure_reason is set.
     route: Optional[RouteDecision] = None
     failure_reason: Optional[FailureReason] = None
+    # The adversarial judge's verdict, PER RECORD (D-036: the judge reads a reconstructed claim,
+    # which is a property of the record, not of one field). Before D-079 this arrived as a
+    # `c_judge` float copied onto every field — a record-level fact wearing a field-level shape,
+    # inside a mean that implied it contributed. It defaults to `not_run` so the gate fails
+    # CLOSED on a record nobody challenged: silence is not a pass.
+    judge_verdict: JudgeVerdict = JudgeVerdict.not_run
+    # The judge's weakest-supported-claim / over-reach note, for the human holding the denial.
+    # The full reasoning trace stays in the run's `judge/` artifacts; this is the one line a
+    # reviewer needs in front of the record itself.
+    judge_note: Optional[str] = None
 
 
 # --- Illustrative, non-normative default weights (blueprint 5.2). --------------------
 # These are FIRST-CALIBRATION ANCHORS. The domain instantiation overrides them from the
 # gold set. c_logprob defaults to 0.0 for the black-box Claude Code reference case.
+#
+# `c_judge` IS ABSENT ON PURPOSE (D-079) and `composite()` refuses a weight for it. The
+# surviving weights are deliberately NOT re-normalized by hand: `composite()` renormalizes over
+# present signals, so deleting a key preserves every remaining ratio exactly. Re-weighting them
+# would be calibration, and calibration is the researcher's to ratify, not the scaffold's to
+# invent while removing something else.
+#
+# HONESTY NOTE, unresolved: on real runs only `c_grounded` and `c_ensemble` ever materialize.
+# `c_verbal`, `c_consistency` and `c_logprob` were measured across 86 records / 670 scored fields
+# and fired on none, so the profile declares five weights and produces two. That is why the
+# achievable score lattice is as coarse as it is. The two honest exits — produce those signals,
+# or declare a two-signal profile — are a researcher call, tracked on the ladder, not settled here.
 DEFAULT_WEIGHTS = {
     "numeric": {"c_grounded": 0.35, "c_verbal": 0.20, "c_ensemble": 0.15,
-                "c_judge": 0.15, "c_consistency": 0.10, "c_logprob": 0.05},
-    "inferential": {"c_judge": 0.30, "c_ensemble": 0.25, "c_grounded": 0.15,
+                "c_consistency": 0.10, "c_logprob": 0.05},
+    "inferential": {"c_ensemble": 0.25, "c_grounded": 0.15,
                     "c_verbal": 0.15, "c_consistency": 0.15, "c_logprob": 0.00},
 }
 
@@ -134,25 +182,78 @@ def required_agreement(k: int = DEFAULT_ENSEMBLE_K,
     return min_agreeing / k
 
 
+# --- What values the composite can actually TAKE ---------------------------------------
+def achievable_composites(weights: dict[str, float], k: int = DEFAULT_ENSEMBLE_K,
+                          grounding: tuple = (0.0, 1.0),
+                          signals: tuple = ("c_grounded", "c_ensemble")) -> list[float]:
+    """Every distinct composite a field can score, given which signals actually materialize.
+
+    The accept bar has been discussed all project as a continuous dial and has never been one.
+    `c_ensemble` is quantized to j/k, so the composite lands on a short LATTICE — and two
+    thresholds between adjacent rungs are the same threshold. Under the shipped profile with
+    grounding and agreement present the score is `0.7*g + 0.3*e`, and with grounding binary
+    that is ten rungs of which only 1.000 clears 0.95.
+
+    Removing `c_judge` coarsened this from steps of 1/13 to steps of 1/10 (D-079, a known and
+    accepted consequence). It is a function rather than a comment so a test can assert it: a
+    weight change that quietly made the top rung unreachable would auto-accept nothing at all,
+    by construction rather than by evidence, and should fail something.
+
+    **`grounding` defaults to binary because that is the case the 1/10 claim is about**, not
+    because grounding is always binary. `ground_literature` returns a fraction for a partial
+    lexical match, and real runs do contain values like 0.150 and 0.850. Those land BETWEEN the
+    rungs — the lattice is a floor on how coarse the score is, never a claim that every score
+    sits on it. Pass the grounding values you actually observe to see the real spacing.
+    """
+    agreement = tuple(j / k for j in range(k + 1))
+    grid = {"c_grounded": tuple(grounding), "c_ensemble": agreement}
+    present = [s for s in signals if s in weights]
+    den = sum(weights[s] for s in present)
+    if den == 0.0:
+        return []
+    out = set()
+    for combo in _product(*(grid.get(s, (0.0, 1.0)) for s in present)):
+        out.add(round(sum(weights[s] * v for s, v in zip(present, combo)) / den, 10))
+    return sorted(out)
+
+
+def _product(*pools):
+    """itertools.product, inlined: this module is imported by stdlib-only consumers."""
+    result = [[]]
+    for pool in pools:
+        result = [x + [y] for x in result for y in pool]
+    return [tuple(r) for r in result]
+
+
 # --- Starting routing rules (blueprint 6, "Resolved here"). Calibrate on the gold set.
 def default_route(fv: FieldValue, min_agreement: float = 1.0) -> RouteDecision:
     """Reference routing logic. Deliberately simple and overridable per project.
 
     `min_agreement` is the ensemble bar, normally derived from the instantiation's ratified
     (k, min_agreeing) pair via `required_agreement`. Default is unanimity.
+
+    **This is SELECTION, and the judge is not part of it (D-079).** Routing asks the two
+    mechanical questions the pipeline can answer for itself — is the value in the text, and did
+    independent readings agree — and the adversarial judge then vetoes what survives, in
+    `lit2db.gate`. Reading the verdict here as well would spend a judge call on every record
+    before anything knew which records could be affected by one; measured, 139 of 165 could not.
+
+    Removing it does NOT loosen anything: an unjudged record used to be stopped here (no
+    `c_judge` -> `human_review`) and is now stopped at the gate instead, which is where every
+    other disqualifying fact already lives — a retracted source, a contradiction from the value's
+    own paper. Same denial, stated in the place that denies.
     """
     # A contradiction outranks every confidence signal. If the source itself argues against
-    # the value, no amount of grounding, ensemble agreement, or judge approval redeems it —
-    # those all measured a span the extractor chose.
+    # the value, no amount of grounding or ensemble agreement redeems it — those both measured
+    # a span the extractor chose.
     if fv.contradictions:
         return RouteDecision.human_review
     c = fv.confidence_components
     if c is None:
         return RouteDecision.human_review
     grounded = c.c_grounded if c.c_grounded is not None else 0.0
-    judge_pass = (c.c_judge or 0.0) >= 0.5
     ensemble = c.c_ensemble if c.c_ensemble is not None else 0.0
-    if judge_pass and ensemble >= min_agreement - _EPS and grounded >= 0.9:
+    if ensemble >= min_agreement - _EPS and grounded >= 0.9:
         return RouteDecision.auto_accept
     if (0.6 <= grounded < 0.9) or (0.0 < ensemble < min_agreement - _EPS):
         return RouteDecision.cheap_repair

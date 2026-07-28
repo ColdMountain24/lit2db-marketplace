@@ -52,12 +52,18 @@ and it does not travel inside the records.
 Per record (not per value — D-031):
 
 - `ground_literature` on every value against its quote → `c_grounded`.
-- `verifier-judge-agent` reads the **full source** and verifies a reconstructed claim without
-  seeing the extracted JSON → `c_judge`. Note the shipped judge is a different *model*, same
-  family — say "different model, same family", never "cross-family".
 - `contradiction-hunter-agent` searches the whole source for counter-evidence →
   `contradiction_search` + `contradictions`. Set the state explicitly: `clean` and `not_run`
   are different facts and must never be conflated.
+- `score_and_route`, then `verifier-judge-agent` on what survives: it reads the **full source**
+  and verifies a reconstructed claim without seeing the extracted JSON → `judge_verdict` on the
+  record. Note the shipped judge is a different *model*, same family — say "different model,
+  same family", never "cross-family".
+
+The judge comes AFTER scoring (D-079) because it is a veto, not a signal: it can only strike a
+record out, so a record the score has already turned down cannot be changed by one. Judge every
+record that survives selection, and a ratified random slice of those that did not — the second
+part is what keeps the veto's reject-side behaviour measurable, and it is not optional.
 
 ## 5 — Route and gate
 

@@ -68,30 +68,40 @@ def _clean_field(name):
             "contradiction_search": "clean"}
 
 
+def _gateable(**over):
+    """A record whose ONLY interesting property is the one under test.
+
+    `judge_verdict` is supported throughout: since D-079 the adversarial judge is a veto, so a
+    fixture without a verdict denies for a reason none of these tests is about — and every
+    assertion below would still pass while measuring the wrong condition.
+    """
+    rec = {"judge_verdict": "supported", "fields": [_clean_field("accession")]}
+    rec.update(over)
+    return rec
+
+
 def test_a_routed_record_is_denied_even_at_a_perfect_score():
-    rec = {"route": "human_review", "fields": [_clean_field("accession")]}
+    rec = _gateable(route="human_review")
     reasons = gate_reasons(rec, 1.0, autoaccept=0.95, require_contradiction_search=True)
     assert reasons == ["record routed human_review"]
 
 
 def test_the_reason_travels_so_a_reviewer_knows_why():
-    rec = {"route": "human_review", "failure_reason": "plant gene in cyanobacterial host",
-           "fields": [_clean_field("accession")]}
+    rec = _gateable(route="human_review", failure_reason="plant gene in cyanobacterial host")
     reasons = gate_reasons(rec, 1.0, autoaccept=0.95)
     assert "plant gene in cyanobacterial host" in reasons[0]
 
 
 def test_an_identical_unrouted_record_still_writes():
     """The routing must be what denies it — not some incidental property of the record."""
-    rec = {"fields": [_clean_field("accession")]}
-    assert gate_reasons(rec, 1.0, autoaccept=0.95, require_contradiction_search=True) == []
+    assert gate_reasons(_gateable(), 1.0, autoaccept=0.95,
+                        require_contradiction_search=True) == []
 
 
 def test_review_routing_does_not_excuse_anything_else():
     """A retracted source still denies a flagged record, and stays visible as its own reason."""
     f = _clean_field("accession")
     f["provenance"] = {"source_status": "retracted"}
-    rec = {"route": "human_review", "fields": [f]}
-    reasons = gate_reasons(rec, 1.0, autoaccept=0.95)
+    reasons = gate_reasons(_gateable(route="human_review", fields=[f]), 1.0, autoaccept=0.95)
     assert any("retracted" in r for r in reasons)
     assert len(reasons) == 2

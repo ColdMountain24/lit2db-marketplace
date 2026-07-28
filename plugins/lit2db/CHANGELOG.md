@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.32.0 — 2026-07-27
+The adversarial judge stops pretending to be a score.
+
+`c_judge` sat at weight 0.15 inside the confidence mean, beside `c_grounded` at 0.35, which
+described the judge as one contributing signal among six. It never behaved like one:
+
+| grounding | agreement | judge | composite (before) |
+|---|---|---|---|
+| 1.0 | 3/3 | SUPPORTED | **1.0000** |
+| 1.0 | 3/3 | *(unjudged)* | **1.0000** |
+| 1.0 | 3/3 | PARTIAL | 0.8846 |
+| 1.0 | 3/3 | UNSUPPORTED | 0.7692 |
+| 1.0 | 2/3 | SUPPORTED | 0.9231 |
+
+Against a 0.95 bar only a unanimous, fully-grounded record could ever be written, and for such a
+record the verdict changed nothing — it could only lower. **It was already a veto**, and
+**139 of 165 judge calls could not have changed any outcome.** Because it lived inside the mean,
+every one of them was paid for before anything knew which records mattered.
+
+- **`c_judge` leaves the composite** (`DEFAULT_WEIGHTS`), and `ConfidenceComponents.composite()`
+  now **raises** if a weight vector contains it. A project overrides these weights from its
+  instantiation, so "do not put the judge back in the mean" is enforced rather than documented.
+  The surviving weights are deliberately not re-normalized: `composite()` renormalizes over
+  present signals, so deleting a key preserves every remaining ratio, and re-weighting them
+  would be calibration — the researcher's to ratify, not the scaffold's to invent.
+- **The verdict is a typed record-level state.** `ExtractedRecord.judge_verdict` (`not_run` /
+  `unparseable` / `supported` / `partial` / `unsupported`) plus a `judge_note` for the reviewer.
+  It replaces a float copied onto every field — a record-level fact (D-036) wearing a
+  field-level shape.
+- **The veto is a gate condition.** `gate_reasons` is now `selection_reasons` +
+  `judge_veto_reasons`, composed. Only `supported` clears; `partial` blocks (it scored 0.885
+  against a 0.95 bar before, so tolerating it would have quietly *loosened* the gate while the
+  change was described as behaviour-preserving); and absence blocks, for the same reason
+  `contradiction_search` blocks on `not_run` — a record nobody challenged has not passed its
+  challenge. Not configurable, and applied at **both** enforcement points.
+- **The driver judges after selection.** `run_wave.py` reorders to hunter → assemble → score →
+  select → judge → gate, so an adversarial read is spent on records a verdict can actually
+  decide. Nothing is written before every verdict is in hand.
+- **A mandatory audit slice keeps the reject side measurable.** A ratified fraction of the
+  records turned down *on evidence* is still judged — deterministically sampled from
+  `blake2b(wave|paper|record_id)` so a resumed leg re-draws the same rows, and `ceil`-sized so a
+  non-zero fraction never silently audits nothing. Rows turned down for a retracted source, a
+  ratified review-only rule, or an incomplete counter-evidence search are excluded: no verdict
+  can overturn those, so judging them would measure nothing. **A saving that erased the
+  measurement justifying the pipeline would not be a saving.**
+  - `judge_audit_fraction` has **no default and the driver refuses to start without it** — the
+    same rule as D-038's forbidden truncation default. `scored.json` gains a `judge_scope` block
+    reporting calls made against calls the old order would have made.
+  - Two question kinds the old scheme could not express: **`judge_veto`** (the score would have
+    written this and the judge struck it out) and **`audit_disagreement`** (the score turned this
+    down and the judge found it supported — evidence the bar is too strict). Plus
+    `verification_unusable`, so a paper denied wholesale by an unreadable hunter reply does not
+    read like a paper with nothing in it.
+- **Verified behaviour-preserving, on real records.** 212 records from 13 saved paper-runs,
+  scored and gated under each verdict condition before and after: **identical written sets**
+  (12 under SUPPORTED, 0 under PARTIAL / UNSUPPORTED / absent), every written record at exactly
+  1.0000. `tests/test_judge_veto.py` re-proves it as an 80-case truth table against a frozen
+  replica of the old arithmetic, so the claim survives the code it was made about.
+- **Known and accepted:** with one signal fewer the score lattice coarsens from steps of 1/13 to
+  steps of 1/10, so more records tie at the threshold. `achievable_composites()` pins this so a
+  later weight change cannot make the top rung unreachable unnoticed — and documents the caveat
+  that partial grounding scores land between the rungs, because a lattice is a floor on
+  coarseness, not a promise about every score.
+- **Surfaced, not decided:** the shipped profile now declares five weights of which **two**
+  materialize on real fields (`c_verbal`, `c_consistency`, `c_logprob` fired on none of 670
+  scored fields). Producing those signals or declaring a two-signal profile is a researcher call.
+
+407 → 518 tests.
+
 ## 0.31.0 — 2026-07-27
 A stage that never ran may not be recorded as a stage that found nothing.
 

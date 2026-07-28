@@ -66,15 +66,33 @@ class ConfidenceComponents(BaseModel):
     c_logprob: Optional[float] = None      # mean token logprob (gray-box only)
     c_ensemble: Optional[float] = None     # agreement fraction across ensemble
     c_grounded: Optional[float] = None     # entailment (lit) or mapping-validation pass (structured)
-    c_judge: Optional[float] = None        # adversarial judge pass; different MODEL, same family
-                                           # by default (D-041) — a gap measured under this
-                                           # wiring is a LOWER BOUND, never "cross-family"
+    # RECORDED, NEVER SCORED (D-079). The adversarial judge is a VETO applied after selection,
+    # not a term in this mean — see `ExtractedRecord.judge_verdict`, which is where a verdict
+    # belongs now. The field survives so artifacts written before v0.32.0 still validate and the
+    # value stays readable in an audit; nothing computes with it. Different MODEL, same family by
+    # default (D-041) — a gap measured under this wiring is a LOWER BOUND, never "cross-family".
+    c_judge: Optional[float] = None
     c_verbal: Optional[float] = None       # model verbalized confidence
     c_consistency: Optional[float] = None  # 1 - normalized self-consistency variance
 
     def composite(self, weights: dict[str, float]) -> float:
         """Weighted mean over PRESENT signals, renormalized. weights come from the
-        gold-set-calibrated, domain-ratified weight vector (see instantiation/)."""
+        gold-set-calibrated, domain-ratified weight vector (see instantiation/).
+
+        Refuses a weight for `c_judge`. Measured before D-079: at the 0.95 bar a unanimous,
+        fully-grounded record scored 1.000 unjudged and 1.000 judged-supported, so the judge
+        could only ever LOWER the number — it was a veto wearing a weight, and 139 of 165 judge
+        calls could not have changed any outcome. A project may override these weights from its
+        instantiation, so "do not put it back" has to be enforced rather than documented: this
+        project's recurring finding is that the failure happens exactly where the check isn't.
+        """
+        if "c_judge" in weights:
+            raise ValueError(
+                "c_judge is not a scored signal (D-079): the adversarial judge is a VETO "
+                "applied after selection, recorded as ExtractedRecord.judge_verdict and "
+                "enforced in lit2db.gate.judge_veto_reasons. Weighting it inside a mean lets a "
+                "confident grounding score average away a refusal. Remove it from the weight "
+                "vector; the remaining weights renormalize over present signals on their own.")
         num = den = 0.0
         for k, w in weights.items():
             v = getattr(self, k, None)

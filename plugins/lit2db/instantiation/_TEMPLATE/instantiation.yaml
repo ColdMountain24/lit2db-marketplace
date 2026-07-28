@@ -87,6 +87,19 @@ routing:
   # behaviour; set true for a run where every auto-accept has been audited for cherry-picking
   # (this flag is also the control/treatment switch if you are measuring the difference).
   require_contradiction_search: false
+  # The adversarial judge is a VETO applied after the score decides what survives, never a term
+  # inside it (D-079). That part is not configurable. What IS yours to set: how many of the
+  # records the pipeline TURNS DOWN still get judged anyway.
+  #
+  # It matters because judging only the accepted set destroys the measurement the whole method
+  # rests on — you could no longer say how often the pipeline rejects something that was right.
+  # A saving that erases the evidence justifying the pipeline is not a saving. Set it from how
+  # sharply you need to report that rate: a clean result over 28 audited rejects bounds the
+  # false-reject rate under ~11%, over 14 only under ~21%. 1.0 judges everything, as before.
+  # `scripts/run_wave.py` REFUSES TO START without this, deliberately: it is a ratified
+  # decision, not a tuning constant, and a scaffold that picked it for you would be inventing
+  # substance while removing something else.
+  judge_audit_fraction: 0.20
   # Ensemble agreement (Stage 3/5). The extractor runs `k` independent passes; `c_ensemble`
   # is the fraction agreeing with the modal value, and this is how much agreement a value
   # needs before it may auto-accept.

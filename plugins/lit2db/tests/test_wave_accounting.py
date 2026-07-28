@@ -318,29 +318,47 @@ def test_a_transient_exit_is_still_retried(tmp_path, monkeypatch):
 
 # --- 6. a stage that never ran may not be recorded as a stage that found nothing --------
 def _ready_to_verify(tmp_path, monkeypatch, n_records=3):
-    """A paper with its extraction passes already on disk, poised at the judge stage."""
+    """A paper with its extraction passes already on disk, poised at the verification stages.
+
+    The records carry a real field with a quote that anchors in `full.txt`, because since D-079
+    the driver ASSEMBLES and SCORES before it judges: records that do not survive assembly are
+    never sent to the judge, and a fixture of empty records would make every test below pass by
+    never reaching the stage it is about.
+    """
     store = tmp_path / "stores" / "PMC1"
     store.mkdir(parents=True)
-    (store / "full.txt").write_text("some source text")
+    (store / "full.txt").write_text("the accession is WP_1 and it makes pentalenene")
     (store / "sections.json").write_text("[]")
     for name in ("extract.md", "judge.md", "hunter.md"):
         (tmp_path / name).write_text("{STORE} {OUT_DIR} {WRITES} {CLAIM} {VALUES}")
 
+    def _rec(i):
+        return {"record_id": f"r{i}", "entity_type": "enzyme", "fields": [
+            {"field_name": "accession", "value": "WP_1",
+             "verbatim_quote": "the accession is WP_1",
+             "confidence_components": {"c_ensemble": 1.0}}]}
+
+    # TWO passes, not one. Scoring now happens before the judge, so these tests reach
+    # `required_agreement` — which refuses k=1, because one pass agrees with itself and would
+    # assert an agreement nobody measured. A one-model fixture was never a legal ensemble; the
+    # old order just never got far enough to say so.
     out = tmp_path / "run"
-    d = out / "PMC1" / "pass1"
-    d.mkdir(parents=True)
-    (d / "pass1.json").write_text(json.dumps({"records": [{"record_id": "r0"}]}))
+    for p in ("pass1", "pass2"):
+        d = out / "PMC1" / p
+        d.mkdir(parents=True)
+        (d / f"{p}.json").write_text(json.dumps({"records": [_rec(i) for i in range(n_records)]}))
 
     monkeypatch.setattr(run_wave, "merge_passes", lambda passes, identity_fields: {
-        "records": [{"record_id": f"r{i}", "entity_type": "enzyme", "fields": []}
-                    for i in range(n_records)],
+        "records": [_rec(i) for i in range(n_records)],
         "identity_tiers": {}, "alignment": [], "ensemble": {}})
 
     cfg = {"stores": str(tmp_path / "stores"), "extract_prompt": str(tmp_path / "extract.md"),
            "judge_prompt": str(tmp_path / "judge.md"), "hunter_prompt": str(tmp_path / "hunter.md"),
-           "models": ["haiku"], "identity_fields": ["accession"], "identity_primary": "accession",
+           "models": ["haiku", "sonnet"], "identity_fields": ["accession"],
+           "identity_primary": "accession",
            "judge_model": "haiku", "hunter_model": "haiku", "weights_key": "numeric",
            "db_path": str(tmp_path / "db.sqlite"), "auto_accept_threshold": 0.95,
+           "judge_audit_fraction": 0.2,
            "run_timestamp": "2026-07-27T00:00:00Z", "producing_process": "test"}
     return cfg, out
 
@@ -350,13 +368,30 @@ def _reply(ok, text=""):
             "streams": {s: 0 for s in STREAMS}, "attempts": 1}
 
 
+CLEAN_HUNT = json.dumps({"contradiction_search": "clean", "contradictions": []})
+
+
+def _stage_replies(hunter, judge):
+    """Answer the hunter and the judge differently — the stages must be testable apart.
+
+    They could not be before: the judge ran first over every merged record, so one stub served
+    both. Now the hunter's result decides which records reach the judge at all, and a test that
+    breaks both at once cannot tell you which stage it measured.
+    """
+    def reply(*a, **k):
+        return hunter if "hunter" in (k.get("label") or "") else judge
+    return reply
+
+
 def test_a_skipped_judge_leaves_the_paper_unscored(tmp_path, monkeypatch):
     """THE DEFECT, EXACTLY AS IT HAPPENED. Every judge and hunter call returned without being
     invoked (the paper deadline had expired); the driver read each missing verdict as an
     absence, scored the paper, and marked it done — 77 records recorded as verified-and-denied
     when the verification had never run, and no resume would ever revisit them."""
     cfg, out = _ready_to_verify(tmp_path, monkeypatch)
-    monkeypatch.setattr(run_wave, "call_agent", lambda *a, **k: _reply(ok=False))
+    # The hunter answers so the records reach selection; the judge is the stage that never runs.
+    monkeypatch.setattr(run_wave, "call_agent", _stage_replies(
+        hunter=_reply(ok=True, text=CLEAN_HUNT), judge=_reply(ok=False)))
 
     r = run_wave._do_paper("PMC1", cfg, out, Fuse(label="w"))
 
@@ -371,7 +406,8 @@ def test_a_skipped_judge_leaves_the_paper_unscored(tmp_path, monkeypatch):
 def test_an_incomplete_paper_is_retried_by_the_next_leg(tmp_path, monkeypatch):
     """The guard is only worth anything if resume actually picks the paper back up."""
     cfg, out = _ready_to_verify(tmp_path, monkeypatch)
-    monkeypatch.setattr(run_wave, "call_agent", lambda *a, **k: _reply(ok=False))
+    monkeypatch.setattr(run_wave, "call_agent", _stage_replies(
+        hunter=_reply(ok=True, text=CLEAN_HUNT), judge=_reply(ok=False)))
     run_wave._do_paper("PMC1", cfg, out, Fuse(label="w"))
 
     todo = [p for p in ["PMC1"] if not (out / p / "scored.json").exists()]
@@ -388,7 +424,8 @@ def test_a_judge_that_answered_unusably_is_scored_not_retried(tmp_path, monkeypa
     unparseable — a paper that silently never finishes is worse than an auditable deny.
     """
     cfg, out = _ready_to_verify(tmp_path, monkeypatch)
-    monkeypatch.setattr(run_wave, "call_agent", lambda *a, **k: _reply(ok=True, text="I refuse"))
+    monkeypatch.setattr(run_wave, "call_agent", _stage_replies(
+        hunter=_reply(ok=True, text=CLEAN_HUNT), judge=_reply(ok=True, text="I refuse")))
 
     r = run_wave._do_paper("PMC1", cfg, out, Fuse(label="w"))
 
@@ -397,23 +434,93 @@ def test_a_judge_that_answered_unusably_is_scored_not_retried(tmp_path, monkeypa
     assert (out / "PMC1" / "judge" / "r0.raw.txt").read_text() == "I refuse", (
         "and the unusable reply is preserved so the deny can be audited")
     assert any(q["kind"] == "no_verdict" for q in r["questions"])
+    assert r["n_written"] == 0, "an unreadable verdict is not a verdict; the veto holds"
 
 
 def test_a_skipped_hunter_also_blocks_scoring(tmp_path, monkeypatch):
     """The hunter failing wholesale leaves every field 'not_run', which the gate blocks — a
     correct denial for a reason that is a driver failure, not a property of the paper."""
     cfg, out = _ready_to_verify(tmp_path, monkeypatch)
-
-    def only_hunter_fails(*a, **k):
-        return _reply(ok=False) if "hunter" in (k.get("label") or "") else _reply(
-            ok=True, text=json.dumps({"verdict": "SUPPORTED"}))
-
-    monkeypatch.setattr(run_wave, "call_agent", only_hunter_fails)
+    monkeypatch.setattr(run_wave, "call_agent", _stage_replies(
+        hunter=_reply(ok=False),
+        judge=_reply(ok=True, text=json.dumps({"verdict": "SUPPORTED"}))))
     r = run_wave._do_paper("PMC1", cfg, out, Fuse(label="w"))
 
     assert r["status"] == "incomplete"
     assert any("hunter" in s for s in r["skipped_stages"])
     assert not (out / "PMC1" / "scored.json").exists()
+
+
+def test_a_supported_verdict_reaches_the_gate_and_the_record_is_written(tmp_path, monkeypatch):
+    """THE HAPPY PATH, which nothing else in this file covered.
+
+    Every other driver test breaks a stage, so all of them exercised the branches where no
+    verdict survives. A defect lived in the gap: `judge_batch` returned the verdict WORD while
+    `apply_verdicts` read the verdict OBJECT, so the first record the judge ever supported would
+    have crashed the paper — and the suite was green. A test file made entirely of failure cases
+    tests the failure handling, not the feature.
+    """
+    cfg, out = _ready_to_verify(tmp_path, monkeypatch, n_records=1)
+    monkeypatch.setattr(run_wave, "call_agent", _stage_replies(
+        hunter=_reply(ok=True, text=CLEAN_HUNT),
+        judge=_reply(ok=True, text=json.dumps({
+            "verdict": "SUPPORTED", "weakest_supported_claim": "WP_1 is named in the source",
+            "reasoning": "the accession appears verbatim"}))))
+
+    r = run_wave._do_paper("PMC1", cfg, out, Fuse(label="w"))
+
+    assert r["status"] == "done"
+    assert r["n_written"] == 1, "a fully grounded, unanimous, judge-supported record is written"
+    rec = json.loads((out / "PMC1" / "scored.json").read_text())["records"][0]
+    assert rec["judge_verdict"] == "supported"
+    assert rec["judge_note"] == "WP_1 is named in the source", (
+        "the judge's own words must survive onto the record, not just its verdict")
+    assert r["judge_scope"]["selected"] == 1 and r["judge_scope"]["judge_calls"] == 1
+
+
+def test_a_veto_on_a_selected_record_becomes_a_researcher_question(tmp_path, monkeypatch):
+    """The most informative outcome the pipeline produces: the score would have written this
+    record and the adversarial judge stopped it. Under the old weighted-mean scheme it came out
+    as a number that moved, and could not be named."""
+    cfg, out = _ready_to_verify(tmp_path, monkeypatch, n_records=1)
+    monkeypatch.setattr(run_wave, "call_agent", _stage_replies(
+        hunter=_reply(ok=True, text=CLEAN_HUNT),
+        judge=_reply(ok=True, text=json.dumps({
+            "verdict": "PARTIAL", "weakest_supported_claim": "an accession is mentioned"}))))
+
+    r = run_wave._do_paper("PMC1", cfg, out, Fuse(label="w"))
+
+    assert r["n_written"] == 0
+    q = [x for x in r["questions"] if x["kind"] == "judge_veto"]
+    assert q and "The score alone would have written this record" in q[0]["detail"]
+    assert "an accession is mentioned" in q[0]["detail"]
+
+
+def test_a_hunter_that_answered_unusably_costs_no_judge_calls(tmp_path, monkeypatch):
+    """A consequence of the D-079 order, checked rather than discovered.
+
+    If the counter-evidence search executes but replies unusably, every field stays `not_run`
+    and every record is blocked on process grounds. No verdict can lift a process block, so the
+    judge is not consulted at all — the paper is denied wholesale for free instead of for the
+    price of one adversarial read per record. What must NOT happen is that this reads like a
+    paper with nothing in it, so it is catalogued as a run failure.
+    """
+    cfg, out = _ready_to_verify(tmp_path, monkeypatch)
+    calls = []
+
+    def track(*a, **k):
+        calls.append(k.get("label") or "")
+        return _reply(ok=True, text="unparseable either way")
+
+    monkeypatch.setattr(run_wave, "call_agent", track)
+    r = run_wave._do_paper("PMC1", cfg, out, Fuse(label="w"))
+
+    assert r["status"] == "done" and r["n_written"] == 0
+    assert not [c for c in calls if "judge" in c], "no verdict could have changed any outcome"
+    assert r["judge_scope"]["judge_calls"] == 0
+    assert r["judge_scope"]["judge_calls_under_judge_everything"] == 3
+    q = [x for x in r["questions"] if x["kind"] == "verification_unusable"]
+    assert q and "never sent to the adversarial judge" in q[0]["detail"]
 
 
 def test_incomplete_papers_are_named_in_the_manifest(tmp_path):

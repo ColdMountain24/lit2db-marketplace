@@ -46,7 +46,9 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import datetime as dt
+import hashlib
 import json
+import math
 import pathlib
 import re
 import subprocess
@@ -59,6 +61,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from lit2db.accounting import STREAMS, RunAccount             # noqa: E402
 from lit2db.ensemble import merge_passes                      # noqa: E402
 from lit2db.fuse import Fuse, FuseExceeded                    # noqa: E402
+from lit2db.gate import selection_reasons                     # noqa: E402
 from lit2db.store import find_spans, section_of               # noqa: E402
 from lit2db.contracts.provenance import process_fingerprint   # noqa: E402
 
@@ -71,10 +74,14 @@ _log_lock = threading.Lock()
 # against agent calls measured in minutes.
 _gate_lock = threading.Lock()
 
-# A judge verdict is an ordinal, not a probability. PARTIAL sits below any sane auto-accept bar
-# on purpose: "the core is right but something over-reaches" is precisely the case a human
-# should see, and rounding it up would remove the judge from the accept decision entirely.
-VERDICT_TO_C = {"SUPPORTED": 1.0, "PARTIAL": 0.5, "UNSUPPORTED": 0.0}
+# A judge verdict is an ordinal STATE, never a probability (D-079). It used to be mapped onto
+# {1.0, 0.5, 0.0} and averaged into the confidence composite, which described it as one signal
+# among six; it never behaved like one, because it could only ever lower a score. It is now a
+# veto carried on the record and applied at the gate. PARTIAL still blocks — under the old mean
+# it scored 0.885 against a 0.95 bar, so tolerating it here would have quietly loosened the gate
+# while the change was being described as behaviour-preserving.
+VERDICT_TO_STATE = {"SUPPORTED": "supported", "PARTIAL": "partial",
+                    "UNSUPPORTED": "unsupported"}
 
 
 def _extract_json(text: str) -> dict | None:
@@ -306,12 +313,15 @@ def run_passes(paper: str, cfg: dict, pdir: pathlib.Path, fuse: Fuse) -> tuple[l
     return passes, failures, completed
 
 
-def assemble(paper: str, cfg: dict, merged: dict, judge: dict, hunt: dict) -> tuple[list, list]:
-    """Merged values + provenance + judge + hunter -> records the spine can score.
+def assemble(paper: str, cfg: dict, merged: dict, hunt: dict) -> tuple[list, list]:
+    """Merged values + provenance + hunter -> records the spine can score.
 
     `merge_passes` returns values WITHOUT provenance — it computes agreement, not evidence — so
     each modal value's quote is re-attached from whichever pass produced it, and the offset is
     resolved from the store rather than trusted from an agent.
+
+    **No judge argument (D-079.)** Assembly now runs BEFORE the judge, because scoring is what
+    decides who is worth judging. Verdicts are stamped on afterwards by `apply_verdicts`.
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location("srv", PLUGIN / "mcp/lit2db_mcp/server.py")
@@ -378,9 +388,9 @@ def assemble(paper: str, cfg: dict, merged: dict, judge: dict, hunt: dict) -> tu
             else:
                 cc["c_grounded"] = srv.ground_literature(value=value,
                                                         quote=quote)["c_grounded"]
-            v = judge.get(rec["record_id"])
-            if v:
-                cc["c_judge"] = VERDICT_TO_C[v]
+            # No `c_judge` is written here any more. The verdict is a property of the RECORD
+            # (D-036) and a veto rather than a score (D-079); copying it onto every field gave a
+            # record-level fact a field-level shape and put it inside a mean it never behaved like.
             fv = {"field_name": name, "value": value, "confidence_components": cc,
                   "provenance": {
                       "kind": "literature", "source_id": paper,
@@ -430,8 +440,127 @@ def assemble(paper: str, cfg: dict, merged: dict, judge: dict, hunt: dict) -> tu
     return out, dropped
 
 
+# --- who is worth an adversarial read (D-079 / D-081) -----------------------------------
+# A rejected record is AUDITABLE only if it was turned down on evidence. The other three
+# rejection classes are turned down for reasons a verdict cannot overturn, so judging them
+# spends budget without measuring anything about the veto:
+#   status  — the source is retracted or superseded. Not a judgement call at all.
+#   policy  — a ratified review-only record (D-067). The researcher already ruled on it.
+#   process — the counter-evidence search never completed, so the record was never really tried.
+# What survives is thin evidence and contradicted-by-its-own-source. The second is in the frame
+# on purpose: it is the one place the contradiction hunter and the adversarial judge read the
+# same claim independently, and whether they agree is worth knowing.
+DENIAL_STATUS, DENIAL_POLICY, DENIAL_PROCESS = "status", "policy", "process"
+DENIAL_THIN, DENIAL_CONTRADICTED = "thin_evidence", "contradicted"
+
+
+def denial_class(scored: dict) -> str:
+    """Why this record was turned down, read off the record itself rather than off prose.
+
+    Classifying by matching the gate's reason STRINGS would work today and break the first time
+    somebody rewords a message. Every fact needed is already structured on the record.
+    """
+    fields = scored.get("fields") or []
+    for fv in fields:
+        prov = fv.get("provenance") or {}
+        status = getattr(prov.get("source_status"), "value", prov.get("source_status"))
+        if status is not None and status != "active":
+            return DENIAL_STATUS
+    route = getattr(scored.get("route"), "value", scored.get("route"))
+    if route in ("human_review", "quarantine"):
+        return DENIAL_POLICY
+    for fv in fields:
+        searched = getattr(fv.get("contradiction_search"), "value",
+                           fv.get("contradiction_search"))
+        if searched == "not_run":
+            return DENIAL_PROCESS
+    for fv in fields:
+        if fv.get("contradictions"):
+            return DENIAL_CONTRADICTED
+    return DENIAL_THIN
+
+
+def audit_slice(record_ids: list, fraction: float, salt: str) -> list:
+    """A deterministic, resume-stable sample of `record_ids`, of size ceil(fraction * n).
+
+    Deterministic because a resumed paper must re-draw the SAME rows: a fresh random draw on
+    every leg would judge a different sample each time, and the reject-side rate would then be
+    measured over a set nobody can reconstruct. Hashing (salt, id) rather than seeding a PRNG
+    also means the sample does not shift when the record ORDER changes, which it does whenever
+    the identity chain resolves a paper differently.
+
+    `ceil` rather than `round`, so a non-zero fraction always yields at least one audited record
+    when there is anything to audit — a wave that quietly audited nothing would report a saving
+    it had not earned.
+    """
+    if not record_ids or fraction <= 0:
+        return []
+    n = min(len(record_ids), math.ceil(fraction * len(record_ids)))
+    keyed = sorted(record_ids, key=lambda r: hashlib.blake2b(
+        f"{salt}|{r}".encode("utf-8"), digest_size=16).hexdigest())
+    return sorted(keyed[:n])
+
+
+def select_for_judging(scored: list, cfg: dict, salt: str) -> dict:
+    """Partition scored records into those that get an adversarial read and those that do not.
+
+    THIS FUNCTION IS THE SAVING. Under the old order every merged record was judged before
+    anything knew which records a verdict could affect; measured over 165 records, 139 of those
+    calls could not have changed any outcome, because at the 0.95 bar only a unanimous,
+    fully-grounded record can be written and for such a record the judge can only lower.
+
+    `scored` items are `{"record": <scored record>, "composite": float}`. Returns the ids to
+    judge, the audit sample, and the per-record denial class, so `scored.json` can report what
+    was skipped instead of leaving it to be inferred.
+    """
+    lane = cfg.get("review_lane", [])
+    thr = cfg["auto_accept_threshold"]
+    selected, rejected, classes = [], [], {}
+    for s in scored:
+        rec, rid = s["record"], s["record"]["record_id"]
+        # Selection is the gate MINUS the veto — the same predicate the write path applies, so
+        # the two cannot disagree about who was worth judging and who was worth writing.
+        if not selection_reasons(rec, s["composite"], thr,
+                                 require_contradiction_search=True, review_lane=lane):
+            selected.append(rid)
+        else:
+            rejected.append(rid)
+            classes[rid] = denial_class(rec)
+    auditable = [r for r in rejected if classes[r] in (DENIAL_THIN, DENIAL_CONTRADICTED)]
+    audit = audit_slice(auditable, float(cfg["judge_audit_fraction"]), salt)
+    return {"selected": selected, "audit": audit, "rejected": rejected,
+            "auditable": auditable, "denial_class": classes,
+            "to_judge": sorted(set(selected) | set(audit))}
+
+
+def apply_verdicts(scored: list, verdicts: dict, judged: set) -> None:
+    """Stamp `judge_verdict` / `judge_note` onto scored records, IN PLACE.
+
+    Three states, kept apart because they are three different facts:
+      * judged and answered      -> the verdict,
+      * judged and no answer     -> `unparseable` (the call happened; the raw reply is on disk),
+      * never sent to the judge  -> `not_run`, the default.
+    All three except `supported` block. The last is not a loophole: a record only goes unjudged
+    when selection already rejected it, so its denial is decided before the judge is consulted.
+    """
+    for s in scored:
+        rid = s["record"]["record_id"]
+        v = verdicts.get(rid)
+        if v:
+            s["record"]["judge_verdict"] = VERDICT_TO_STATE[v["verdict"]]
+            note = v.get("weakest_supported_claim") or v.get("reasoning")
+            if note:
+                s["record"]["judge_note"] = str(note)[:400]
+        elif rid in judged:
+            s["record"]["judge_verdict"] = "unparseable"
+        else:
+            s["record"]["judge_verdict"] = "not_run"
+
+
 def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list,
-                        unjudged: list | None = None, review_lane: tuple = ()) -> list:
+                        unjudged: list | None = None, review_lane: tuple = (),
+                        vetoed: list | None = None, audit_disagreements: list | None = None,
+                        blocked_on_process: int = 0) -> list:
     """Deterministic signals that a RESEARCHER, not the pipeline, has to resolve.
 
     Everything here is a fact about the run, not an opinion about the chemistry. The head
@@ -466,6 +595,34 @@ def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list,
         qs.append({"paper": paper, "kind": "no_verdict",
                    "detail": f"{rid}: the adversarial judge returned no parseable verdict; "
                              f"the raw response is in judge/ — a record that skipped its check"})
+    # THE TWO QUESTIONS THE NEW ORDER CAN ASK AND THE OLD ONE COULD NOT. Under the old scheme a
+    # verdict was one term in a mean, so "the score would have written this and the judge stopped
+    # it" and "the score turned this down but the judge would have kept it" were both invisible —
+    # they came out as a number that moved. They are now separable, and each is a direct
+    # measurement of the accept bar rather than an opinion about a record.
+    for v in (vetoed or []):
+        qs.append({"paper": paper, "kind": "judge_veto",
+                   "detail": f"{v['record_id']}: cleared every mechanical check and the "
+                             f"adversarial judge struck it out ({v['verdict']})"
+                             + (f" — {v['note']}" if v.get("note") else "")
+                             + ". The score alone would have written this record."})
+    for a in (audit_disagreements or []):
+        qs.append({"paper": paper, "kind": "audit_disagreement",
+                   "detail": f"{a['record_id']}: turned down as {a['denial_class']}, but the "
+                             f"adversarial judge read the source and found the claim SUPPORTED. "
+                             f"Evidence the accept bar is rejecting sound records."})
+    # A record blocked because the counter-evidence search never completed is denied for a
+    # DRIVER failure, not for anything about the paper — and under the D-079 order it is also
+    # never sent to the judge, because a verdict cannot lift a process block. Both facts point
+    # the same way and neither is visible in the yield, so it is said out loud: a paper that
+    # produced nothing because a stage replied unusably must not read like a paper with nothing
+    # in it. This is the same distinction v0.31.0 drew for a stage that never ran.
+    if blocked_on_process:
+        qs.append({"paper": paper, "kind": "verification_unusable",
+                   "detail": f"{blocked_on_process} record(s) were blocked because the "
+                             f"counter-evidence search never completed for them, so they were "
+                             f"also never sent to the adversarial judge — a denial caused by "
+                             f"the run, not by the source. hunter_raw.txt has the reply."})
     for f in failures:
         qs.append({"paper": paper, "kind": "pass_failed",
                    "detail": f"pass {f['pass']} ({f['model']}) did not complete: {f['why']}"})
@@ -557,10 +714,65 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     log(f"{paper}: {[len(p) for p in passes]} -> {len(merged['records'])} records "
         f"{merged['identity_tiers']}")
 
-    # --- judge per record, hunter per paper (D-036) ------------------------------------
-    jt = pathlib.Path(cfg["judge_prompt"]).read_text(encoding="utf-8")
+    # --- STAGE ORDER (D-079). hunter -> assemble -> score -> SELECT -> judge -> gate -----
+    # The judge used to run first, over every merged record, before anything knew which records
+    # a verdict could affect. Measured over 165 records, 139 of those calls could not have
+    # changed any outcome: at the 0.95 bar only a unanimous, fully-grounded record can be
+    # written, and for such a record the judge can only lower the score. So selection comes
+    # first now, and the adversarial read is spent on the records it can actually decide — plus
+    # a ratified random audit slice of the rejected, so the veto's reject-side behaviour stays
+    # measurable. A saving that erased the measurement justifying the pipeline would not be one.
+    #
+    # The hunter moves ahead of the judge because a contradiction is a SELECTION condition:
+    # without it, selection would be reading an incomplete record.
     store = pathlib.Path(cfg["stores"]) / paper
 
+    hp = pathlib.Path(cfg["hunter_prompt"]).read_text(encoding="utf-8")
+    values = json.dumps([{ "record_id": r["record_id"],
+                           "fields": {f["field_name"]: f.get("value") for f in r["fields"]}}
+                         for r in merged["records"]], indent=1)
+    hr = call_agent(hp.replace("{STORE}", str(store)).replace("{VALUES}", values),
+                    cfg["hunter_model"], label=f"{paper} hunter", cwd=pdir, fuse=fuse,
+                    stage="hunter", unit=paper, read_dirs=(store,),
+                    timeout=cfg.get("_call_timeout", 1800))
+    hunt = {"state_by_record": {}, "contradictions": []}
+    parsed = _extract_json(hr["text"] or "")
+    if parsed:
+        state = parsed.get("contradiction_search", "not_run")
+        hunt["state_by_record"] = {r["record_id"]: state for r in merged["records"]}
+        hunt["contradictions"] = parsed.get("contradictions", [])
+    else:
+        # Fails closed to 'not_run', which BLOCKS every record — correct, but indistinguishable
+        # from a hunter that genuinely did not run unless the raw reply is kept. The first live
+        # run lost a whole paper's gating to an unparsed reply with nothing on disk to explain
+        # why, so the response is always written now.
+        log(f"{paper}: hunter reply did not parse — every field stays 'not_run' (blocking)")
+    (pdir / "hunter.json").write_text(json.dumps(hunt, indent=1))
+    (pdir / "hunter_raw.txt").write_text(hr["text"] or "(no output)")
+
+    # --- assemble + score: everything the pipeline can decide without a model call --------
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("srv", PLUGIN / "mcp/lit2db_mcp/server.py")
+    srv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(srv)
+
+    records, dropped = assemble(paper, cfg, merged, hunt)
+    scored = []
+    for r in records:
+        sr = srv.score_and_route(record=r, weights_key=cfg.get("weights_key", "numeric"),
+                                 ensemble_k=len(cfg["models"]), ensemble_min_agreeing=0,
+                                 review_lane=cfg.get("review_lane", []))
+        scored.append({"record": sr, "composite": sr.get("_composite_confidence") or 0.0})
+
+    # The audit sample is salted with the WAVE and the PAPER, never with a clock or a PRNG, so a
+    # resumed leg re-draws exactly the same rows. A sample nobody can reconstruct is not evidence.
+    pick = select_for_judging(scored, cfg, salt=f"{cfg.get('wave', 'wave')}|{paper}")
+    log(f"{paper}: {len(scored)} scored -> {len(pick['selected'])} selected, "
+        f"{len(pick['audit'])} audited of {len(pick['auditable'])} auditable "
+        f"({len(pick['to_judge'])} judge calls, was {len(scored)})")
+
+    # --- judge per record (D-036), over the selected set + the audit slice ---------------
+    jt = pathlib.Path(cfg["judge_prompt"]).read_text(encoding="utf-8")
     jdir = pdir / "judge"
     jdir.mkdir(exist_ok=True)
     batch_n = max(1, int(cfg.get("judge_batch_size", 1)))
@@ -603,49 +815,33 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
         parsed = _parse_verdicts(r["text"] or "", ids)
         (jdir / f"{'_'.join(ids)}.json").write_text(json.dumps(
             {"record_ids": ids, "ok": r["ok"], "parsed": parsed}, indent=1))
-        return r["ok"], [(rid, parsed.get(rid, {}).get("verdict")) for rid in ids]
+        # THE WHOLE VERDICT OBJECT, not just its verdict word. `weakest_supported_claim` is the
+        # line a reviewer holding a denial actually needs, and v0.24.0 went to the trouble of
+        # parsing it structurally; returning only the word here would have discarded it again
+        # one function later, which is the exact defect that release existed to fix.
+        return r["ok"], [(rid, parsed.get(rid)) for rid in ids]
 
-    recs = merged["records"]
+    by_id = {s["record"]["record_id"]: s["record"] for s in scored}
+    recs = [by_id[rid] for rid in pick["to_judge"]]
     batches = [recs[i:i + batch_n] for i in range(0, len(recs), batch_n)]
     verdicts, unjudged, judge_calls_ran = {}, [], 0
-    with cf.ThreadPoolExecutor(max_workers=cfg.get("judge_concurrency", 4)) as ex:
-        for ran, pairs in ex.map(judge_batch, batches):
-            judge_calls_ran += bool(ran)
-            for rid, v in pairs:
-                if v:
-                    verdicts[rid] = v
-                else:
-                    unjudged.append(rid)
+    if batches:
+        with cf.ThreadPoolExecutor(max_workers=cfg.get("judge_concurrency", 4)) as ex:
+            for ran, pairs in ex.map(judge_batch, batches):
+                judge_calls_ran += bool(ran)
+                for rid, v in pairs:
+                    if v and v.get("verdict") in VERDICT_TO_STATE:
+                        verdicts[rid] = v
+                    else:
+                        unjudged.append(rid)
     # A MISSING VERDICT IS A FAILURE, NOT AN ABSENCE. Silently treating "the judge did not
     # answer" as "there was nothing to say" lets a record skip the adversarial check that is
     # the point of the pipeline. Measured: 7 of 45 records in the v4 slice, invisible.
+    # Only records that were SENT can be missing a verdict; the rest are `not_run` by design.
     if unjudged:
         log(f"{paper}: NO VERDICT for {len(unjudged)}/{len(recs)} — raw responses in judge/")
     log(f"{paper}: judged {len(verdicts)}/{len(recs)}"
         + (f" (batches of {batch_n})" if batch_n > 1 else ""))
-
-    hp = pathlib.Path(cfg["hunter_prompt"]).read_text(encoding="utf-8")
-    values = json.dumps([{ "record_id": r["record_id"],
-                           "fields": {f["field_name"]: f.get("value") for f in r["fields"]}}
-                         for r in merged["records"]], indent=1)
-    hr = call_agent(hp.replace("{STORE}", str(store)).replace("{VALUES}", values),
-                    cfg["hunter_model"], label=f"{paper} hunter", cwd=pdir, fuse=fuse,
-                    stage="hunter", unit=paper, read_dirs=(store,),
-                    timeout=cfg.get("_call_timeout", 1800))
-    hunt = {"state_by_record": {}, "contradictions": []}
-    parsed = _extract_json(hr["text"] or "")
-    if parsed:
-        state = parsed.get("contradiction_search", "not_run")
-        hunt["state_by_record"] = {r["record_id"]: state for r in merged["records"]}
-        hunt["contradictions"] = parsed.get("contradictions", [])
-    else:
-        # Fails closed to 'not_run', which BLOCKS every record — correct, but indistinguishable
-        # from a hunter that genuinely did not run unless the raw reply is kept. The first live
-        # run lost a whole paper's gating to an unparsed reply with nothing on disk to explain
-        # why, so the response is always written now.
-        log(f"{paper}: hunter reply did not parse — every field stays 'not_run' (blocking)")
-    (pdir / "hunter.json").write_text(json.dumps(hunt, indent=1))
-    (pdir / "hunter_raw.txt").write_text(hr["text"] or "(no output)")
 
     # --- a stage that never ran may not be recorded as a stage that found nothing --------
     # THE WORST DEFECT v0.30.0 INTRODUCED. When the paper deadline expired, every remaining
@@ -664,50 +860,77 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     #     question. It is scored, because re-running a paper whose replies are reproducibly
     #     unparseable would loop forever, and a permanent deny that a human can audit beats a
     #     paper that silently never finishes.
+    #
+    # `batches` is empty when NOTHING needed judging — every record was rejected on evidence the
+    # judge cannot overturn and the audit slice came up empty. That is a completed stage with no
+    # work in it, not a skipped one, so it must not read as a failure.
     skipped = ([f"judge ({len(batches)} call(s), none executed)"] if batches and not
                judge_calls_ran else []) + ([] if hr["ok"] else ["hunter (call did not execute)"])
     if skipped:
         log(f"{paper}: VERIFICATION INCOMPLETE — {', '.join(skipped)}; "
             f"leaving unscored so the next leg resumes it")
         return {"paper": paper, "status": "incomplete", "n_records": 0, "n_written": 0,
-                "skipped_stages": skipped, "failures": failures, "dropped": [],
+                "skipped_stages": skipped, "failures": failures, "dropped": dropped,
                 "questions": [{"paper": paper, "kind": "verification_skipped",
-                               "detail": f"{len(merged['records'])} record(s) went unverified: "
+                               "detail": f"{len(scored)} record(s) went unverified: "
                                          f"{'; '.join(skipped)}. The paper is NOT scored and "
                                          f"will be retried; nothing was written."}]}
 
-    # --- spine: score, route, gate ------------------------------------------------------
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("srv", PLUGIN / "mcp/lit2db_mcp/server.py")
-    srv = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(srv)
-
-    records, dropped = assemble(paper, cfg, merged, verdicts, hunt)
-    scored, written = [], 0
-    for r in records:
-        sr = srv.score_and_route(record=r, weights_key=cfg.get("weights_key", "numeric"),
-                                 ensemble_k=len(cfg["models"]), ensemble_min_agreeing=0,
-                                 review_lane=cfg.get("review_lane", []))
-        comp = sr.get("_composite_confidence") or 0.0
+    # --- spine: veto, gate ---------------------------------------------------------------
+    # Nothing has been written yet. Scoring happened above because it is free and it decides who
+    # gets judged; the GATE runs only now, with every verdict in hand, so a paper whose judge
+    # stage failed above returns `incomplete` with nothing in the database.
+    apply_verdicts(scored, verdicts, judged=set(pick["to_judge"]))
+    written = 0
+    for s in scored:
         with _gate_lock:
-            g = srv.gate_upsert(record=sr, composite_confidence=comp, db_path=cfg["db_path"],
-                                autoaccept=cfg["auto_accept_threshold"],
-                                require_contradiction_search=True,
-                                review_lane=cfg.get("review_lane", []))
-        written += bool(g.get("written"))
-        scored.append({"record": sr, "composite": comp, "gate": g})
+            s["gate"] = srv.gate_upsert(
+                record=s["record"], composite_confidence=s["composite"],
+                db_path=cfg["db_path"], autoaccept=cfg["auto_accept_threshold"],
+                require_contradiction_search=True, review_lane=cfg.get("review_lane", []))
+        written += bool(s["gate"].get("written"))
 
+    # What the judge was and was not asked, recorded rather than left to be inferred. A wave that
+    # reports a saving without reporting its coverage is asking to be taken on trust.
+    selected = set(pick["selected"])
+    judge_scope = {
+        "records": len(scored), "selected": len(selected),
+        "audited": len(pick["audit"]), "auditable": len(pick["auditable"]),
+        "audit_fraction": float(cfg["judge_audit_fraction"]),
+        "judge_calls": len(pick["to_judge"]),
+        "judge_calls_under_judge_everything": len(scored),
+        "audit_sample": [{"record_id": r, "denial_class": pick["denial_class"][r],
+                          "verdict": (verdicts.get(r) or {}).get("verdict")}
+                         for r in pick["audit"]],
+        "denial_classes": {c: sum(1 for v in pick["denial_class"].values() if v == c)
+                           for c in sorted(set(pick["denial_class"].values()))},
+    }
     (pdir / "scored.json").write_text(json.dumps({"records": [s["record"] for s in scored],
+                                                  "judge_scope": judge_scope,
                                                   "gate": [{"record_id": s["record"]["record_id"],
                                                             "composite": s["composite"],
                                                             "gate": s["gate"]} for s in scored]},
                                                  indent=1))
+
+    # A record the score would have written and the judge struck out is the single most
+    # informative outcome this pipeline produces, and one the old scheme could not name.
+    vetoed = [{"record_id": rid, "verdict": verdicts[rid]["verdict"],
+               "note": verdicts[rid].get("weakest_supported_claim")}
+              for rid in pick["selected"]
+              if rid in verdicts and verdicts[rid]["verdict"] != "SUPPORTED"]
+    disagreements = [{"record_id": rid, "denial_class": pick["denial_class"][rid]}
+                     for rid in pick["audit"]
+                     if (verdicts.get(rid) or {}).get("verdict") == "SUPPORTED"]
     qs = catalogue_questions(paper, merged, failures, dropped, unjudged=unjudged,
-                             review_lane=tuple(cfg.get("review_lane", [])))
+                             review_lane=tuple(cfg.get("review_lane", [])),
+                             vetoed=vetoed, audit_disagreements=disagreements,
+                             blocked_on_process=judge_scope["denial_classes"].get(
+                                 DENIAL_PROCESS, 0))
     log(f"{paper}: {written}/{len(scored)} written, {len(qs)} question(s), "
         f"{time.time() - t0:.0f}s")
     return {"paper": paper, "status": "done", "n_records": len(scored), "n_written": written,
-            "failures": failures, "dropped": dropped, "questions": qs}
+            "failures": failures, "dropped": dropped, "questions": qs,
+            "judge_scope": judge_scope}
 
 
 def _recover_done(out: pathlib.Path, paper: str) -> dict | None:
@@ -755,6 +978,26 @@ def main() -> int:
     a = ap.parse_args()
 
     cfg = json.loads(pathlib.Path(a.config).read_text())
+
+    # THE AUDIT FRACTION HAS NO DEFAULT, ON PURPOSE (D-081). It is the share of turned-down
+    # records that still gets an adversarial read, which is the only thing keeping the veto's
+    # reject-side behaviour measurable — and it trades tokens against how sharply a false-reject
+    # rate can be reported. That is a researcher's call, ratified per wave, exactly like the
+    # accept threshold and the ensemble bar. A scaffold that silently picked 0.2 would be
+    # originating substance; one that silently picked 0.0 would erase the measurement the
+    # method's central claim rests on. Same rule as D-038's forbidden truncation default.
+    if "judge_audit_fraction" not in cfg:
+        log("REFUSING TO RUN: the wave config sets no `judge_audit_fraction`. This is the "
+            "share of REJECTED records that still goes to the adversarial judge, so the "
+            "reject side of the veto stays measurable. It has no default because it is a "
+            "ratified decision, not a tuning constant. Set it (0.20 was ratified for the "
+            "terpenoid pilot; 1.0 judges everything, as before D-079).")
+        return 2
+    if not 0.0 <= float(cfg["judge_audit_fraction"]) <= 1.0:
+        log(f"REFUSING TO RUN: judge_audit_fraction={cfg['judge_audit_fraction']} is not a "
+            f"fraction in 0..1")
+        return 2
+
     out = pathlib.Path(cfg["out"]).resolve()
     out.mkdir(parents=True, exist_ok=True)
     papers = cfg["papers"] if isinstance(cfg["papers"], list) else \
@@ -782,6 +1025,8 @@ def main() -> int:
         f"({len(papers) - len(todo)} already done)")
     log(f"models {cfg['models']} | judge {cfg['judge_model']} | threshold "
         f"{cfg['auto_accept_threshold']} | db {cfg['db_path']}")
+    log(f"judge = VETO after selection (D-079); audit slice {cfg['judge_audit_fraction']:.0%} "
+        f"of turned-down records on evidence grounds")
     log(f"fuse {fuse.max_calls:,} calls / {fuse.max_tokens_total:,} tokens")
     if a.dry_run:
         log("DRY RUN — no model calls made")

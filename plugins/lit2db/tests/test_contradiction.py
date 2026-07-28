@@ -31,14 +31,18 @@ CONTRA = {"verbatim_quote": "All assays were performed at pH 5.0 unless otherwis
 def _field(**over):
     fv = {"field_name": "km_value", "value": 4.2, "provenance": PROV, "route": "auto_accept",
           "confidence": 0.99,
-          "confidence_components": {"c_grounded": 1.0, "c_judge": 1.0, "c_ensemble": 1.0,
+          "confidence_components": {"c_grounded": 1.0, "c_ensemble": 1.0,
                                     "c_verbal": 1.0, "c_consistency": 1.0}}
     fv.update(over)
     return fv
 
 
 def _record(**over):
-    return {"record_id": "r1", "entity_type": "e", "fields": [_field(**over)]}
+    # `judge_verdict` is supported so these tests isolate the CONTRADICTION condition. Without
+    # it every case below would deny on the judge's veto (D-079) and the file would pass while
+    # measuring nothing — the failure mode this project keeps finding in its own work.
+    return {"record_id": "r1", "entity_type": "e", "judge_verdict": "supported",
+            "fields": [_field(**over)]}
 
 
 # --- the load-bearing property -----------------------------------------------------

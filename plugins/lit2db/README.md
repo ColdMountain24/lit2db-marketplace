@@ -15,8 +15,9 @@ ratification-ledger items, and the `SchemaReadySpec` contract refuses to build o
 
 High extraction F1 does **not** imply factual accuracy: an extractor at F1 ≈ 0.87 can collapse
 to ≈ 47% factual accuracy under source-grounded judging. So the engineering investment goes
-into the **verification layer** — citation-grounded checks, an adversarial judge, a composite
-confidence, and a confidence-gated human-review router — not into the extractor. This
+into the **verification layer** — citation-grounded checks, a confidence score over mechanical
+signals, an adversarial judge that can veto what the score accepts, and a human-review router —
+not into the extractor. This
 plugin makes that layer the centerpiece: a deterministic verify → route → gate spine wraps the
 non-deterministic LLM extractor, and nothing reaches the database without clearing it.
 
@@ -96,13 +97,21 @@ Three records go through the spine:
 
 - **A** — a clean single-condition Km value → grounds, judge supports → **auto-accept, written**.
 - **B** — a condition-multiplexed turnover number (`73.6 and 40.8 … at 0.3% and 0.75%`). The
-  number *appears* in its quote so **naive grounding passes** — but the adversarial judge flags
-  it **AMBIGUOUS**, so it routes to human-review and the gate **denies** it.
-- **C** — a value from a **retracted** source → grounds and judge-supports, but the gate
+  number *appears* in its quote so **naive grounding passes** — but the readings disagree and
+  the adversarial judge returns **UNSUPPORTED**, which is a veto. The gate **denies** it and
+  prints both reasons.
+- **C** — a value from a **retracted** source → grounds, and the judge supports it, but the gate
   **denies** on `source_status=retracted`.
 
 Only A lands in the ML-ready view. B and C never silently enter the database. That contrast —
-high surface grounding, gated by a stricter judge — is the whole thesis in one run.
+high surface grounding, still struck out — is the whole thesis in one run.
+
+The judge is a **veto applied after the score**, not a term inside it (D-079). Measured over 165
+records: at a 0.95 bar only a unanimous, fully-grounded record can be written, and for such a
+record a supported verdict changes nothing — so 84% of judge calls could not have affected any
+outcome. Scoring first and judging what survives costs a fraction of the same guarantee, and a
+ratified random slice of the *rejected* records is still judged so the veto's reject-side
+behaviour stays measurable.
 
 ## Calibrate before you trust the gate
 

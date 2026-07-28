@@ -79,5 +79,6 @@ def resolve_entity(record: ExtractedRecord, canonical_index: dict) -> str:
 
 def db_upsert(record: ExtractedRecord) -> None:
     """Write a record to the output DB (blueprint Stage 7). The PreToolUse write-gate hook
-    denies this call if composite confidence is below the auto-accept threshold."""
+    denies this call if composite confidence is below the auto-accept threshold, or if the
+    adversarial judge has not cleared the record (`judge_verdict`, D-079)."""
     raise NotImplementedError("wire to the storage backend (Postgres default)")

@@ -311,6 +311,11 @@ def score_and_route(record: dict, weights_key: str = "numeric",
     dead-letter, distinct from field-level human_review). Returns the annotated record +
     a composite record confidence (min over fields = weakest-link).
 
+    **This is SELECTION and it is TWO mechanical signals** — grounding and cross-pass agreement
+    — not a composite over six verification signals (D-079). The adversarial judge is not scored
+    here; it vetoes what survives, at the gate. Anything this function returns is a statement
+    about what the pipeline could check by itself.
+
     `ensemble_k` / `ensemble_min_agreeing` set the agreement bar as "how many of how many
     passes must agree" — the units the signal can actually take, since `c_ensemble` is
     quantized to j/k. Leave both 0 for the shipped default (unanimity at k=3). Setting them
@@ -385,7 +390,10 @@ def gate_upsert(record: dict, composite_confidence: float,
       (2) no field routes to quarantine or human_review,
       (3) every field's source_status is 'active',
       (4) no field is contradicted by its own source (a BLOCK, never a confidence penalty —
-          every confidence signal scores the span the extractor chose to surface).
+          every confidence signal scores the span the extractor chose to surface),
+      (5) `record.judge_verdict` is 'supported' — the adversarial judge's VETO (D-079). Not
+          configurable, and absence blocks: a record nobody challenged has not passed its
+          challenge, exactly as an unsearched value is not a clean one.
     Set require_contradiction_search=True to also block values whose source was never
     searched for counter-evidence: "we did not look" is not "we looked and it was clean".
     'deny' wins. A denied record is NOT written; its reasons are returned for routing to the
