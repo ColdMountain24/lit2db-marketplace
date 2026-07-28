@@ -1,0 +1,11 @@
+Contains TWO unrelated changes; the subject names only one.
+
+1. organism authority resolution (the subject) — src/lit2db/taxonomy.py,
+   tests/test_taxonomy.py, scripts/run_wave.py
+2. the browser reviewer — scripts/review_ui.{py,html}, src/lit2db/review.py,
+   tests/test_review_ui.py, commands/lit2db-review-ui.md, and the store_dirname
+   extraction in src/lit2db/store.py (D-107, from delta-010)
+
+Cause: the review UI was staged-not-committed by a concurrent session working in the
+same tree; this commit's 'git commit' swept the staged index in. Not rewritten because
+it was already pushed — see the CHANGELOG's 'What commit 77d587f actually contains'.
