@@ -189,8 +189,7 @@ def _seconds_until_reset(text: str, default: int) -> int:
 
 def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
                fuse: Fuse, stage: str = "", unit: str = "", read_dirs: tuple = (),
-               timeout: int = 1800, retries: int = 3, backoff: int = 900,
-               deadline: float | None = None) -> dict:
+               timeout: int = 1800, retries: int = 3, backoff: int = 900) -> dict:
     """One headless agent invocation. Returns {ok, text, tokens, attempts}.
 
     `read_dirs` MUST include the source store. A headless agent cannot pause to ask for a
@@ -206,26 +205,21 @@ def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
         cmd += ["--add-dir", d]
     last = ""
     for attempt in range(1, retries + 1):
-        # A PER-PAPER DEADLINE THAT RETRIES MAY NOT CROSS. Measured: one Sonnet pass on the
-        # largest store we had run hit the 1800s timeout, and with retries=3 that single pass
-        # would have burned 90 MINUTES before the driver gave up — silently, because waiting is
-        # indistinguishable from working. A flat per-call timeout multiplied by a retry count is
-        # the wrong shape: it bounds each attempt and leaves the PAPER unbounded.
-        if deadline is not None and time.time() >= deadline:
-            last = f"paper deadline reached before attempt {attempt}"
-            log(f"    {label}: {last} — giving up on this call")
-            break
-        # Never let one call run past the paper's own deadline either.
-        call_timeout = timeout
-        if deadline is not None:
-            call_timeout = max(60, min(timeout, int(deadline - time.time())))
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=call_timeout, cwd=str(cwd))
+                               timeout=timeout, cwd=str(cwd))
         except subprocess.TimeoutExpired:
-            last = f"timeout after {call_timeout}s"
-            log(f"    {label}: {last} (attempt {attempt}/{retries})")
-            continue
+            # A TIMEOUT IS NOT RETRIED. This is the real fix for the hang v0.30.0 responded to.
+            # Measured: one Sonnet pass hit the 1800s timeout, and with retries=3 that single
+            # pass would have burned 90 MINUTES before the driver gave up — silently, because a
+            # driver waiting is indistinguishable from a driver working. The cause was a prompt
+            # that sent the agent grepping a document that fits in context several times over:
+            # a DETERMINISTIC hang, so the second attempt buys an identical wait at full price.
+            # Retries still cover what they were for — a transient non-zero exit, and a usage
+            # limit — which are the failures where trying again is a different event.
+            last = f"timeout after {timeout}s"
+            log(f"    {label}: {last} — not retried (a timeout repeats)")
+            break
         blob = (r.stdout or "") + (r.stderr or "")
         if r.returncode == 0:
             usage = {}
@@ -292,8 +286,7 @@ def run_passes(paper: str, cfg: dict, pdir: pathlib.Path, fuse: Fuse) -> tuple[l
                     "pass's output directory. Write only to your own out_dir.")
         return i, call_agent(prompt, models[i], label=f"{paper} pass{i + 1}/{models[i]}",
                              cwd=pdir, fuse=fuse, stage="extract", unit=paper,
-                             read_dirs=(store,), timeout=cfg.get("_call_timeout", 1800),
-                             deadline=cfg.get("_deadline"))
+                             read_dirs=(store,), timeout=cfg.get("_call_timeout", 1800))
 
     passes, failures, completed = [None] * len(models), [], [False] * len(models)
     with cf.ThreadPoolExecutor(max_workers=len(models)) as ex:
@@ -506,19 +499,26 @@ def do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                                "detail": f"{type(exc).__name__}: {exc}"}]}
 
 
-def _paper_budget(cfg: dict, paper: str) -> tuple:
-    """(per_call_timeout, deadline) for one paper, scaled to the document.
+def _paper_budget(cfg: dict, paper: str) -> int:
+    """The per-call timeout for one paper, scaled to the document.
 
     A flat 1800s was applied to a 1.7kB store and a 149kB store alike. Every store in this
     corpus fits in context several times over (largest ~37k tokens against a 200k window), so
-    per-call time should track size, and the PAPER should carry the hard stop.
+    per-call time should track size.
+
+    THERE IS NO LONGER A PAPER DEADLINE. v0.30.0 added one because a per-call timeout times a
+    retry count leaves the PAPER unbounded — but a wall-clock stop is the wrong instrument for
+    that, and it did real damage: when it expired, every remaining call returned "deadline
+    reached" WITHOUT RUNNING, and the driver scored the paper anyway. It recorded 77 records as
+    verified-and-denied when the verification had simply not happened, and marked the paper done
+    so no resume would revisit it. Not retrying a timeout (see `call_agent`) bounds the paper
+    through the mechanism that was actually unbounded, and leaves a skipped stage impossible
+    rather than merely detected.
     """
     store = pathlib.Path(cfg["stores"]) / paper / "full.txt"
     kb = (store.stat().st_size / 1024) if store.exists() else 40.0
     per_call = int(cfg.get("call_timeout_base", 420) + kb * cfg.get("call_timeout_per_kb", 12))
-    per_call = min(per_call, int(cfg.get("call_timeout_max", 1800)))
-    budget = int(cfg.get("paper_timeout", 2400))
-    return per_call, time.time() + budget
+    return min(per_call, int(cfg.get("call_timeout_max", 1800)))
 
 
 def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
@@ -528,8 +528,7 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
         return {"paper": paper, "status": "skipped"}
 
     t0 = time.time()
-    call_timeout, deadline = _paper_budget(cfg, paper)
-    cfg = {**cfg, "_call_timeout": call_timeout, "_deadline": deadline}
+    cfg = {**cfg, "_call_timeout": _paper_budget(cfg, paper)}
     log(f"{paper}: {len(cfg['models'])} extraction passes")
     passes, failures, completed = run_passes(paper, cfg, pdir, fuse)
     if not any(completed):
@@ -571,7 +570,11 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                          if f.get("value") is not None)
 
     def judge_batch(batch):
-        """One judge call over `batch` records. Returns [(record_id, verdict|None)].
+        """One judge call over `batch` records. Returns (call_ran, [(record_id, verdict|None)]).
+
+        `call_ran` is reported separately from the verdicts because "the judge answered and I
+        could not parse it" and "the judge was never invoked" are different facts that both
+        arrive here as an empty verdict — and only the second one means the stage did not run.
 
         THE RAW RESPONSE IS ALWAYS PERSISTED, verdict or not. Previously only a regex-scraped
         verdict survived and the judge's reasoning was discarded, so nobody could audit why a
@@ -594,19 +597,20 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
         label = f"{paper} judge/{'+'.join(ids)}" if batch_n > 1 else f"{paper} judge/{ids[0]}"
         r = call_agent(p, cfg["judge_model"], label=label, cwd=pdir, fuse=fuse,
                        stage="judge", unit=paper, read_dirs=(store,),
-                       timeout=cfg.get("_call_timeout", 1800), deadline=cfg.get("_deadline"))
+                       timeout=cfg.get("_call_timeout", 1800))
         (jdir / f"{'_'.join(ids)}.raw.txt").write_text(r["text"] or "")
 
         parsed = _parse_verdicts(r["text"] or "", ids)
         (jdir / f"{'_'.join(ids)}.json").write_text(json.dumps(
             {"record_ids": ids, "ok": r["ok"], "parsed": parsed}, indent=1))
-        return [(rid, parsed.get(rid, {}).get("verdict")) for rid in ids]
+        return r["ok"], [(rid, parsed.get(rid, {}).get("verdict")) for rid in ids]
 
     recs = merged["records"]
     batches = [recs[i:i + batch_n] for i in range(0, len(recs), batch_n)]
-    verdicts, unjudged = {}, []
+    verdicts, unjudged, judge_calls_ran = {}, [], 0
     with cf.ThreadPoolExecutor(max_workers=cfg.get("judge_concurrency", 4)) as ex:
-        for pairs in ex.map(judge_batch, batches):
+        for ran, pairs in ex.map(judge_batch, batches):
+            judge_calls_ran += bool(ran)
             for rid, v in pairs:
                 if v:
                     verdicts[rid] = v
@@ -627,7 +631,7 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     hr = call_agent(hp.replace("{STORE}", str(store)).replace("{VALUES}", values),
                     cfg["hunter_model"], label=f"{paper} hunter", cwd=pdir, fuse=fuse,
                     stage="hunter", unit=paper, read_dirs=(store,),
-                    timeout=cfg.get("_call_timeout", 1800), deadline=cfg.get("_deadline"))
+                    timeout=cfg.get("_call_timeout", 1800))
     hunt = {"state_by_record": {}, "contradictions": []}
     parsed = _extract_json(hr["text"] or "")
     if parsed:
@@ -642,6 +646,35 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
         log(f"{paper}: hunter reply did not parse — every field stays 'not_run' (blocking)")
     (pdir / "hunter.json").write_text(json.dumps(hunt, indent=1))
     (pdir / "hunter_raw.txt").write_text(hr["text"] or "(no output)")
+
+    # --- a stage that never ran may not be recorded as a stage that found nothing --------
+    # THE WORST DEFECT v0.30.0 INTRODUCED. When the paper deadline expired, every remaining
+    # judge and hunter call returned without being invoked; the driver read each missing verdict
+    # as an absence, scored the paper, and wrote `scored.json` — marking it DONE and
+    # unresumable with 77 records whose adversarial check had simply not happened. The pipeline
+    # committed the exact error class it exists to catch, silently, in its own bookkeeping.
+    #
+    # The line drawn here is between a stage that did not RUN and a stage that ran badly:
+    #   - no call in the stage executed  -> the stage is missing. Nothing is scored, no
+    #     `scored.json` is written, and the paper stays in `todo` for the next leg. The finished
+    #     extraction passes are already on disk, so the retry resumes at the stage (v0.23.0) and
+    #     re-reads nothing.
+    #   - calls executed and the replies were unusable -> that IS a result. It fails closed
+    #     (`not_run` blocks every field), the raw replies are on disk, and it is catalogued as a
+    #     question. It is scored, because re-running a paper whose replies are reproducibly
+    #     unparseable would loop forever, and a permanent deny that a human can audit beats a
+    #     paper that silently never finishes.
+    skipped = ([f"judge ({len(batches)} call(s), none executed)"] if batches and not
+               judge_calls_ran else []) + ([] if hr["ok"] else ["hunter (call did not execute)"])
+    if skipped:
+        log(f"{paper}: VERIFICATION INCOMPLETE — {', '.join(skipped)}; "
+            f"leaving unscored so the next leg resumes it")
+        return {"paper": paper, "status": "incomplete", "n_records": 0, "n_written": 0,
+                "skipped_stages": skipped, "failures": failures, "dropped": [],
+                "questions": [{"paper": paper, "kind": "verification_skipped",
+                               "detail": f"{len(merged['records'])} record(s) went unverified: "
+                                         f"{'; '.join(skipped)}. The paper is NOT scored and "
+                                         f"will be retried; nothing was written."}]}
 
     # --- spine: score, route, gate ------------------------------------------------------
     import importlib.util
@@ -830,9 +863,42 @@ def _tokens_block(fuse) -> dict:
     }
 
 
+_PRIOR_TOKENS: dict = {}
+
+
+def _prior_token_blocks(out: pathlib.Path) -> list:
+    """Token blocks measured by EARLIER PROCESSES, captured once per run and never rewritten.
+
+    A MEASURED TOKEN BLOCK IS NEVER OVERWRITTEN BY AN EMPTIER ONE. `_recover_done` restores a
+    resumed paper's counts but explicitly cannot restore its tokens — they were spent in a
+    process whose account died with it. The manifest on disk, however, still HELD them, and
+    every resumed leg overwrote that block with its own. A wave resumed for one last paper
+    published a manifest reporting the cost of one paper, in the field a reader takes for the
+    cost of the wave. An artifact that lies about what it measured is a thesis violation, not
+    a bookkeeping slip — this pipeline's whole claim is that its numbers can be audited.
+
+    Captured lazily on the first write of this process, which is why re-reading is safe: by
+    then `manifest.json` is still the PREVIOUS leg's file. Caching it keeps the per-paper
+    rewrites from appending this leg's own growing block to its own history.
+    """
+    key = str(out)
+    if key not in _PRIOR_TOKENS:
+        try:
+            m = json.loads((out / "manifest.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            m = {}
+        prior = list(m.get("tokens_prior_legs") or [])
+        block = m.get("tokens") or {}
+        if block.get("instrumented"):
+            prior.append(block)
+        _PRIOR_TOKENS[key] = prior
+    return _PRIOR_TOKENS[key]
+
+
 def _write_manifest(out, cfg, papers, results, questions, fuse, *, complete):
     done = [r for r in results if r["status"] == "done"]
     carried = [r for r in done if r.get("carried_from_disk")]
+    prior = _prior_token_blocks(out)
     (out / "manifest.json").write_text(json.dumps({
         "complete": complete, "config": cfg,
         "n_papers": len(papers), "n_done": len(done),
@@ -842,8 +908,16 @@ def _write_manifest(out, cfg, papers, results, questions, fuse, *, complete):
         # Counts above span every leg of the wave; tokens below span only the legs that ran in
         # THIS process. Stating both keeps a resumed wave from reading as a cheap one.
         "n_done_carried_from_earlier_legs": len(carried),
+        "papers_unverified_left_for_retry": [r["paper"] for r in results
+                                             if r["status"] == "incomplete"],
         "papers_with_failed_passes": [r["paper"] for r in results if r.get("failures")],
         "tokens": _tokens_block(fuse),
+        # Kept beside, never summed: earlier legs may have paid for work this leg reused, so
+        # adding them would report a total no single run ever spent.
+        "tokens_prior_legs": prior,
+        **({"_tokens_note": f"`tokens` covers THIS leg only; {len(prior)} earlier leg(s) are "
+                            f"preserved in `tokens_prior_legs` and are deliberately not summed."}
+           if prior else {}),
         "fuse": fuse.snapshot(), "per_paper": results,
     }, indent=1) + "\n")
     with (out / "QUESTIONS.jsonl").open("w") as fh:

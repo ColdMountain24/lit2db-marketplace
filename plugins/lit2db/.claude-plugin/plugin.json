@@ -1,6 +1,6 @@
 {
   "name": "lit2db",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "description": "Domain-agnostic pipeline for building ML-ready, auditable, versioned databases from scientific literature and structured data. LLMs formalize and execute; the researcher ratifies all domain substance. Verification, not extraction, is the centerpiece.",
   "author": {
     "name": "Aryan Pathak",

@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.31.0 — 2026-07-27
+A stage that never ran may not be recorded as a stage that found nothing.
+
+Four defects that v0.30.0's deadline introduced, fixed in severity order. The first is the one
+that matters: **the pipeline committed the exact error class it exists to catch, in its own
+bookkeeping, silently.**
+
+- **(a) `scored.json` is never written when a verification stage was SKIPPED.** Measured on
+  `PMC10301674`: the paper deadline expired, all 77 judge calls and the hunter returned
+  `paper deadline reached before attempt 1` **without being invoked**, and the driver read each
+  missing verdict as an absence — scored the paper, wrote `scored.json`, and marked it `done`.
+  77 records were recorded as verified-and-denied when the verification had never happened, and
+  the paper became unresumable. A paper missing a stage now returns `incomplete`, writes no
+  `scored.json`, and is picked up by the next leg — resuming at the *stage*, since its finished
+  extraction passes are still on disk.
+  - **The blast radius was contained by the design, not by luck:** the hunter's `not_run` fails
+    closed, so the gate denied all 77 and **nothing unverified reached the database**. The defect
+    was in what the run *claimed*, which is why it could go unnoticed.
+  - **The line is drawn at "did the call execute", not "was the reply good".** A reply that
+    cannot be parsed IS a result: it fails closed, the raw text is on disk, it is catalogued as a
+    question, and it is scored. Retrying it would loop forever on a paper whose replies are
+    reproducibly unparseable, and a paper that silently never finishes is worse than a deny a
+    human can audit.
+- **(b) A measured `tokens` block is never overwritten by an emptier one.** `_recover_done`
+  restores a resumed paper's counts but explicitly cannot restore its tokens — yet the manifest
+  on disk still *held* them, and every resumed leg overwrote that block with its own. A wave
+  resumed for one last paper published the cost of one paper in the field a reader takes for the
+  cost of the wave. Earlier legs are preserved in `tokens_prior_legs`, kept beside and
+  deliberately **not summed** (a later leg may reuse work an earlier one paid for).
+- **(c) A timeout is not retried.** This is the real fix for the hang v0.30.0 responded to. The
+  cause was a prompt sending the agent to grep a document that fits in context several times
+  over — a *deterministic* hang, so the second attempt buys an identical wait at full price.
+  Retries still cover a transient non-zero exit and a usage limit, where trying again is a
+  different event.
+- **(d) The paper deadline is removed.** A wall-clock stop was the wrong instrument for an
+  unbounded retry count, and it caused (a): when it expired, calls were skipped rather than
+  cut short. Not retrying a timeout bounds the paper through the term that was actually
+  unbounded. Per-call timeouts still scale with document size (`420s + 12s/kB`, capped 1800s).
+- Manifests now name `papers_unverified_left_for_retry`.
+- 399 → 407 tests.
+
 ## 0.30.0 — 2026-07-27
 A paper gets a deadline, and the prompts stop telling agents to grep a document that fits.
 
