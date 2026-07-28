@@ -76,9 +76,31 @@ def test_this_checkout_declares_every_tool_the_manifest_version_claims():
     r = run(["--expect-version", MANIFEST_VERSION,
              "--expect-tools", str(SERVER_TOOL_COUNT)])
     assert r.returncode == 0, r.stderr
-    assert SERVER_TOOL_COUNT == 20, (
+    assert SERVER_TOOL_COUNT == 22, (
         f"server declares {SERVER_TOOL_COUNT} MCP tools; INSTALL.md and "
-        "commands/lit2db-status.md both say 20 — update them together or not at all")
+        "commands/lit2db-status.md both say 22 — update them together or not at all")
+
+
+def test_the_marketplace_manifest_advertises_the_version_that_is_here():
+    """The file an INSTALLER reads must name the plugin that is actually in the repo.
+
+    Found at v0.46.0: `marketplace.json` had been sitting at **0.22.0 while the plugin was at
+    0.45.0** — twenty-three releases of drift in the one manifest a user's `/plugin install`
+    consults. The standing rule "bump the version in BOTH manifests, then tag" was written down
+    and depended on somebody remembering it, which is the same failure mode as every advisory
+    check this project has had to make mechanical.
+
+    Nothing referenced this file before this test: the tool count had a guard, the version an
+    installer sees had none.
+    """
+    market = ROOT.parents[1] / ".claude-plugin" / "marketplace.json"
+    if not market.exists():
+        pytest.skip("not the marketplace repo layout (plugin installed standalone)")
+    entries = [p for p in json.loads(market.read_text())["plugins"] if p["name"] == "lit2db"]
+    assert entries, "marketplace.json lists no lit2db plugin"
+    assert entries[0]["version"] == MANIFEST_VERSION, (
+        f"marketplace.json advertises {entries[0]['version']} but the plugin is "
+        f"{MANIFEST_VERSION} — an installer would get the version this file names")
 
 
 @pytest.mark.parametrize("missing", ["manifest", "server"])

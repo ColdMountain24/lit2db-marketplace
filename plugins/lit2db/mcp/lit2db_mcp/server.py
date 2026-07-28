@@ -59,14 +59,20 @@ from lit2db.ensemble import DEFAULT_STEPS, merge_passes, summarize  # noqa: E402
 from lit2db.store import (  # noqa: E402
     build_from_abstract, build_from_jats, find_spans, quote_at, section_of, write_store,
 )
-from lit2db.gate import gate_reasons, resolve_threshold  # noqa: E402
+from lit2db.gate import (gate_reasons, resolve_min_populated,  # noqa: E402
+                         resolve_threshold)
 from lit2db.dedup import dedupe as _dedupe  # noqa: E402
 from lit2db.entity import build_index as _build_index, explain as _explain  # noqa: E402
 from lit2db.screening import screen_corpus as _screen_corpus  # noqa: E402
 from lit2db.grounding import (ground_literature as _ground,  # noqa: E402
                               validate_mapping as _validate_mapping)
-from lit2db.output import (query as _query, record_candidate as _record_candidate,  # noqa: E402
+from lit2db.output import (adjudications as _adjudications,  # noqa: E402
+                           query as _query, record_adjudication as _record_adjudication,
+                           record_candidate as _record_candidate,
                            review_queue as _review_queue, upsert as _upsert)
+from lit2db.calibration import (frontier as _cal_frontier,  # noqa: E402
+                                precision as _cal_precision, render as _cal_render,
+                                table as _cal_table)
 from lit2db.scoring import score_and_route as _score_and_route  # noqa: E402
 from lit2db.structures import resolve_structure as _resolve_structure  # noqa: E402
 
@@ -78,6 +84,10 @@ mcp = FastMCP("lit2db")
 # Falls back to lit2db.gate.DEFAULT_AUTOACCEPT (0.95), a conservative PLACEHOLDER — a real
 # project overrides it from its calibrated `routing.auto_accept_threshold`. See gate.py.
 AUTOACCEPT = resolve_threshold(env=os.environ)
+# The completeness condition, same story: 0 = off, and a project sets it from its own
+# calibration. Resolved HERE from the same function the PreToolUse hook uses, so the tool and
+# the hook cannot end up applying different numbers.
+MIN_POPULATED = resolve_min_populated(env=os.environ)
 DB_PATH = os.environ.get("LIT2DB_DB_PATH", str(_PLUGIN_ROOT / "examples" / "demo.db"))
 
 
@@ -284,7 +294,8 @@ def score_and_route(record: dict, weights_key: str = "numeric",
 def gate_upsert(record: dict, composite_confidence: float,
                 db_path: str = "", autoaccept: float = -1.0,
                 require_contradiction_search: bool = False,
-                review_lane: list | None = None) -> dict:
+                review_lane: list | None = None,
+                min_populated_fields: int = -1) -> dict:
     """The HARD write-gate (Stage 7). Writes to the DB IFF ALL hold:
       (1) composite_confidence >= auto-accept threshold,
       (2) no field routes to quarantine or human_review,
@@ -294,7 +305,12 @@ def gate_upsert(record: dict, composite_confidence: float,
       (5) `record.judge_verdict` is 'supported' — the adversarial judge's VETO (D-079). Not
           configurable, and absence blocks: a record nobody challenged has not passed its
           challenge, exactly as an unsearched value is not a clean one,
-      (6) the record_id is not already held by a DIFFERENT record.
+      (6) the record_id is not already held by a DIFFERENT record,
+      (7) the record populates at least `min_populated_fields` of its fields. `-1` means unset
+          and falls back to LIT2DB_MIN_POPULATED_FIELDS, then to 0 = no condition. A sparse
+          record is measurably more often wrong — measured across two arms against a
+          collaborator's own database, one of them a pre-registered held-out slice — so a
+          project that has calibrated the number holds thin records in the candidate pool.
     Set require_contradiction_search=True to also block values whose source was never
     searched for counter-evidence: "we did not look" is not "we looked and it was clean".
     'deny' wins. A denied record is NOT written; its reasons are returned for routing to the
@@ -306,7 +322,8 @@ def gate_upsert(record: dict, composite_confidence: float,
     """
     return _upsert(record, composite_confidence, db_path or DB_PATH,
                    autoaccept if autoaccept >= 0 else AUTOACCEPT,
-                   require_contradiction_search, review_lane)
+                   require_contradiction_search, review_lane,
+                   min_populated_fields if min_populated_fields >= 0 else MIN_POPULATED)
 
 
 # ------------------------------------------------------------------------------------
@@ -561,13 +578,71 @@ def record_candidate(record: dict, composite_confidence: float, gate_result: dic
 
 
 @mcp.tool()
-def review_queue(db_path: str = "", source_id: str = "", limit: int = 100) -> dict:
+def review_queue(db_path: str = "", source_id: str = "", limit: int = 100,
+                 unadjudicated_only: bool = False) -> dict:
     """What a human would confirm next, best-first, with the reason each record stopped short.
 
     Best-first because the point is acceleration: the near-misses are where attention converts
     into rows, and a worst-first queue spends it on the records least likely to survive.
+
+    Set `unadjudicated_only=True` to skip what has already been ruled on, so a second sitting
+    picks up where the first stopped instead of re-asking the same questions in the same order.
     """
-    return _review_queue(db_path or DB_PATH, source_id=source_id, limit=limit)
+    return _review_queue(db_path or DB_PATH, source_id=source_id, limit=limit,
+                         unadjudicated_only=unadjudicated_only)
+
+
+@mcp.tool()
+def record_adjudication(record_id: str, source_id: str, verdict: str, db_path: str = "",
+                        note: str = "", adjudicator: str = "researcher") -> dict:
+    """Record what a human concluded about one candidate. THREE verdicts: right, wrong, cant_tell.
+
+    This is how a project's calibration set gets built — as a by-product of a researcher
+    confirming candidates they were going to confirm anyway, rather than as a commissioned
+    annotation job. `calibration_report` turns the accumulated verdicts into a precision table.
+
+    `cant_tell` is a real answer, not a skip. In a corpus where much of the literature is behind
+    a paywall, "the text I can read does not settle this" is often the honest verdict, and
+    recording it as `wrong` would calibrate the database's accept bar against the reach of a
+    library subscription.
+
+    **It cannot write to the ML-ready table and is not a write tool.** Saying a record is right
+    is a statement about whether the GATE was right, and letting it place the row would consume
+    the measurement it exists to produce.
+    """
+    return _record_adjudication(record_id, source_id, verdict, db_path or DB_PATH,
+                                note=note, adjudicator=adjudicator)
+
+
+@mcp.tool()
+def calibration_report(db_path: str = "", bucket_by: str = "completeness") -> dict:
+    """Precision per bucket over everything a human has adjudicated, with n and a 95% interval.
+
+    `bucket_by` is `completeness` (how many fields the record populates), `judge` (the
+    adversarial verdict), `decision` (what the gate did) or `composite` (the score, rounded).
+
+    **It reports; it does not choose.** Where the accept bar should sit is a promise to whoever
+    uses the database about how wrong it may be — a researcher's call to ratify, never a number
+    this scaffold picks. `cant_tell` verdicts are held out of every denominator and counted
+    separately, so a table resting on ten verifiable records cannot be mistaken for one resting
+    on a hundred.
+    """
+    rows = _adjudications(db_path or DB_PATH)["adjudications"]
+    keys = {
+        "completeness": lambda r: r.get("n_populated_fields", 0),
+        "judge": lambda r: r.get("judge_verdict") or "not_run",
+        "decision": lambda r: r.get("gate_decision") or "unknown",
+        "composite": lambda r: round(float(r.get("composite_confidence") or 0.0), 2),
+    }
+    if bucket_by not in keys:
+        return {"ok": False, "reason": f"bucket_by must be one of {sorted(keys)}"}
+    rows_table = _cal_table(rows, keys[bucket_by])
+    return {"ok": True, "bucket_by": bucket_by, "n_adjudicated": len(rows),
+            "overall": _cal_precision(rows), "table": rows_table,
+            "rendered": _cal_render(rows_table, label=bucket_by),
+            "frontier": _cal_frontier(
+                rows, lambda r: (float(r["composite_confidence"])
+                                 if r.get("composite_confidence") is not None else None))}
 
 
 @mcp.tool()

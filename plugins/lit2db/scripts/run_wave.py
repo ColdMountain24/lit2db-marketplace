@@ -545,7 +545,8 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
             s["gate"] = upsert(
                 record=s["record"], composite_confidence=s["composite"],
                 db_path=cfg["db_path"], autoaccept=cfg["auto_accept_threshold"],
-                require_contradiction_search=True, review_lane=cfg.get("review_lane", []))
+                require_contradiction_search=True, review_lane=cfg.get("review_lane", []),
+                min_populated_fields=cfg.get("min_populated_fields", 0))
             # EVERY record enters the candidate pool, whatever the gate said. A record that
             # missed the bar still carries its quote, offset, grounding score, agreement
             # fraction and judge verdict — which is most of the work of confirming it by hand.

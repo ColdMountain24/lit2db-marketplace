@@ -54,6 +54,7 @@ PLUGIN = pathlib.Path(__file__).resolve().parent.parent
 DEFAULTS = {
     "models": ["opus", "sonnet", "haiku"],
     "auto_accept_threshold": 0.95,
+    "min_populated_fields": 0,      # 0 = the completeness condition is off (gate.py)
     "weights_key": "numeric",
     "review_lane": [],
     "identity_fields": {},
@@ -165,7 +166,8 @@ def replay_one(pdir: pathlib.Path, cfg: dict, db: str | None = None) -> dict:
                 g = upsert(record=sr, composite_confidence=comp, db_path=db,
                            autoaccept=cfg["auto_accept_threshold"],
                            require_contradiction_search=False,
-                           review_lane=cfg["review_lane"])
+                           review_lane=cfg["review_lane"],
+                           min_populated_fields=cfg.get("min_populated_fields", 0))
                 if g.get("written"):
                     written += 1
                 for reason in (g.get("reasons") or []):
@@ -186,6 +188,11 @@ def main() -> int:
     ap.add_argument("--config", help="wave config JSON, for the real identity/lane settings")
     ap.add_argument("--fail-on-error", action="store_true",
                     help="exit non-zero if any paper fails to merge or gate")
+    ap.add_argument("--db", help="write the replayed gate decisions to THIS database instead of "
+                                 "a throwaway one, so the written set can be inspected rather "
+                                 "than just counted. Never point it at a real project database: "
+                                 "these records were gated once already and re-writing them "
+                                 "double-counts a yield. Default stays a temp file.")
     a = ap.parse_args()
 
     # Whole config through, defaults only filling gaps. Whitelisting keys silently dropped
@@ -202,7 +209,7 @@ def main() -> int:
     # ONE database for the whole replay, so a record id claimed by an earlier paper is visible
     # to a later one -- the interaction a per-paper database hid.
     tmpdir = tempfile.TemporaryDirectory()
-    shared_db = str(pathlib.Path(tmpdir.name) / "replay.db")
+    shared_db = a.db or str(pathlib.Path(tmpdir.name) / "replay.db")
     for pdir in runs:
         row = replay_one(pdir, cfg, db=shared_db)
         rows.append(row)

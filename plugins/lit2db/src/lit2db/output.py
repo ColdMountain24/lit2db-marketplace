@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from .contracts import ExtractedRecord
-from .gate import DEFAULT_AUTOACCEPT, gate_reasons
+from .gate import DEFAULT_AUTOACCEPT, DEFAULT_MIN_POPULATED_FIELDS, gate_reasons
 
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -54,13 +54,31 @@ def connect(db_path: str) -> sqlite3.Connection:
         payload_json TEXT,
         recorded_at TEXT,
         PRIMARY KEY (record_id, source_id))""")
+    # `adjudications` — what a human said about a candidate. A THIRD table, for the same reason
+    # there are already two: it is a different kind of fact. `records` is what the gate accepted,
+    # `candidates` is what the pipeline produced, and this is what a person concluded. None of
+    # them can be derived from the others.
+    #
+    # This is the calibration set, accumulated rather than commissioned. The gold-set item sat on
+    # the ladder for weeks as a blocker because it was framed as work to commission; a researcher
+    # confirming candidates is work they were going to do anyway, and this is the table that
+    # stops that work from evaporating the moment they close the terminal.
+    con.execute("""CREATE TABLE IF NOT EXISTS adjudications(
+        record_id TEXT,
+        source_id TEXT,
+        verdict TEXT,
+        note TEXT,
+        adjudicator TEXT,
+        adjudicated_at TEXT,
+        PRIMARY KEY (record_id, source_id))""")
     return con
 
 
 def upsert(record: dict, composite_confidence: float, db_path: str,
            autoaccept: float = DEFAULT_AUTOACCEPT,
            require_contradiction_search: bool = False,
-           review_lane: list | None = None) -> dict:
+           review_lane: list | None = None,
+           min_populated_fields: int = DEFAULT_MIN_POPULATED_FIELDS) -> dict:
     """The HARD write-gate. Writes IFF `gate_reasons` returns nothing.
 
     'deny' wins. A denied record is NOT written and its reasons come back for routing to the
@@ -93,7 +111,7 @@ def upsert(record: dict, composite_confidence: float, db_path: str,
     rec = ExtractedRecord.model_validate(record)  # shape first: an unparseable record cannot be gated
     reasons = gate_reasons(json.loads(rec.model_dump_json()), composite_confidence, autoaccept,
                            require_contradiction_search=require_contradiction_search,
-                           review_lane=lane)
+                           review_lane=lane, min_populated_fields=min_populated_fields)
     if reasons:
         return {"written": False, "decision": "deny", "reasons": reasons,
                 "route_to": "human_review_or_quarantine_queue"}
@@ -194,8 +212,103 @@ def record_candidate(record: dict, composite_confidence: float, gate_result: dic
     return {"recorded": True, "record_id": record.get("record_id"), "source_id": source_id}
 
 
+# What a human can honestly say about a candidate. THREE answers, not two (ratified 2026-07-28).
+#
+# `cant_tell` is not hedging and it is not a missing label — it is the most common honest answer
+# in this corpus. 60% of the collaborator's compounds are named only in full texts we cannot
+# obtain, so a reviewer reading an abstract genuinely cannot rule on them. Folding those into
+# `wrong` would blame the extractor for a paywall and would bias every calibrated bar downward
+# by exactly the fraction of the literature we cannot reach.
+#
+# Same distinction the pipeline already draws in two other places: `contradiction_search.not_run`
+# is not `clean`, and `JudgeVerdict.not_run` is not `supported`. "We could not check" is a third
+# state everywhere else in this system; it is a third state here too.
+ADJUDICATION_VERDICTS = ("right", "wrong", "cant_tell")
+
+
+def record_adjudication(record_id: str, source_id: str, verdict: str, db_path: str,
+                        note: str = "", adjudicator: str = "researcher") -> dict:
+    """Record a human's judgement of one candidate. The calibration set, one row at a time.
+
+    NOT a gated write and deliberately not shaped like one: `lit2db.gate.WRITE_TOOLS` does not
+    list it, so the PreToolUse hook leaves it alone, and it touches neither `records` nor
+    `candidates`. A human saying "this one is right" must not put a row in the ML-ready table —
+    that is a claim about the GATE's accuracy, and using it to bypass the gate would destroy the
+    measurement it exists to produce. Confirming a record and writing it are different acts and
+    they stay in different tables.
+
+    Re-adjudicating replaces the previous verdict: a reviewer is allowed to change their mind,
+    and the alternative is a table where the same record appears with two answers and nothing
+    says which is current.
+
+    Fails CLOSED on an unrecognized verdict rather than storing it. A free-text verdict would
+    make the calibration table silently incomplete — the same reason `failure_reason` is an enum.
+    """
+    v = str(verdict or "").strip().lower()
+    if v not in ADJUDICATION_VERDICTS:
+        return {"recorded": False,
+                "reason": f"verdict {verdict!r} is not one of {list(ADJUDICATION_VERDICTS)}; "
+                          f"a verdict this table cannot read must not be stored as one"}
+    con = connect(db_path)
+    try:
+        con.execute("INSERT OR REPLACE INTO adjudications VALUES (?,?,?,?,?,?)",
+                    (str(record_id), str(source_id), v, str(note or ""), str(adjudicator),
+                     datetime.now(timezone.utc).isoformat()))
+        con.commit()
+    finally:
+        con.close()
+    return {"recorded": True, "record_id": record_id, "source_id": source_id, "verdict": v}
+
+
+def adjudications(db_path: str, verdict: str = "") -> dict:
+    """Everything a human has ruled on, joined to the signals the gate saw.
+
+    This join IS the calibration set: one row per adjudicated candidate carrying both the
+    verdict and the evidence the gate had when it decided. `lit2db.calibration` turns it into a
+    precision table; nothing else needs to know how it was gathered.
+    """
+    con = connect(db_path)
+    try:
+        sql = ("SELECT a.record_id, a.source_id, a.verdict, a.note, a.adjudicator, "
+               "c.composite_confidence, c.decision, c.judge_verdict, c.entity_type, "
+               "c.payload_json "
+               "FROM adjudications a LEFT JOIN candidates c "
+               "ON a.record_id = c.record_id AND a.source_id = c.source_id")
+        args: list = []
+        if verdict:
+            sql += " WHERE a.verdict = ?"
+            args.append(verdict)
+        sql += " ORDER BY a.source_id, a.record_id"
+        rows = con.execute(sql, args).fetchall()
+    finally:
+        con.close()
+    out = []
+    for r in rows:
+        payload = {}
+        if r[9]:
+            try:
+                payload = json.loads(r[9])
+            except (TypeError, ValueError):
+                payload = {}
+        out.append({"record_id": r[0], "source_id": r[1], "verdict": r[2], "note": r[3],
+                    "adjudicator": r[4], "composite_confidence": r[5], "gate_decision": r[6],
+                    "judge_verdict": r[7], "entity_type": r[8],
+                    "n_populated_fields": len(_populated_names(payload)),
+                    "populated_fields": _populated_names(payload)})
+    counts = {v: sum(1 for o in out if o["verdict"] == v) for v in ADJUDICATION_VERDICTS}
+    return {"n": len(out), "counts": counts, "adjudications": out}
+
+
+def _populated_names(payload: dict) -> list:
+    """Completeness, read off the stored payload. Imported from the gate rather than
+    reimplemented — a second definition of "populated" would let the calibration table and the
+    write predicate disagree about the very signal being calibrated."""
+    from .gate import populated_fields
+    return populated_fields(payload if isinstance(payload, dict) else {})
+
+
 def review_queue(db_path: str, source_id: str = "", limit: int = 100,
-                 order: str = "best_first") -> dict:
+                 order: str = "best_first", unadjudicated_only: bool = False) -> dict:
     """The candidate pool — what a human would confirm, best-first.
 
     Best-first because the point is acceleration: the near-misses are where a minute of a
@@ -204,12 +317,20 @@ def review_queue(db_path: str, source_id: str = "", limit: int = 100,
 
     Returns the denial reasons alongside each row, so a reviewer sees WHY it stopped short
     without opening a run artifact.
+
+    `unadjudicated_only` hides what a human has already ruled on. Without it a second sitting
+    re-asks the same questions in the same order, which is how a review loop stops being used
+    after the first session — and an unused review loop produces no calibration set at all.
     """
     con = connect(db_path)
     try:
         sql = ("SELECT record_id, source_id, entity_type, composite_confidence, decision, "
                "reasons_json, judge_verdict FROM candidates WHERE decision != 'allow'")
         args: list = []
+        if unadjudicated_only:
+            sql += (" AND NOT EXISTS (SELECT 1 FROM adjudications a "
+                    "WHERE a.record_id = candidates.record_id "
+                    "AND a.source_id = candidates.source_id)")
         if source_id:
             sql += " AND source_id = ?"
             args.append(source_id)
@@ -220,9 +341,11 @@ def review_queue(db_path: str, source_id: str = "", limit: int = 100,
         rows = con.execute(sql, args).fetchall()
         total = con.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
         accepted = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+        judged = con.execute("SELECT COUNT(*) FROM adjudications").fetchone()[0]
     finally:
         con.close()
     return {"n": len(rows), "candidates_total": total, "ml_ready_total": accepted,
+            "adjudicated_total": judged,
             "queue": [{"record_id": r[0], "source_id": r[1], "entity_type": r[2],
                        "composite_confidence": r[3], "decision": r[4],
                        "reasons": json.loads(r[5] or "[]"), "judge_verdict": r[6]}

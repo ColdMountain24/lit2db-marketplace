@@ -36,7 +36,8 @@ def emit(decision: str, reason: str) -> None:
 # non-blocking exit code would let the write through, which is the failure mode being fixed.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 try:
-    from lit2db.gate import gate_reasons, is_write_tool, resolve_composite, resolve_threshold
+    from lit2db.gate import (gate_reasons, is_write_tool, resolve_composite,
+                             resolve_min_populated, resolve_threshold)
 except Exception as exc:  # pragma: no cover - exercised only on a broken install
     emit("deny", f"gate module unavailable ({exc})")
     sys.exit(0)
@@ -58,6 +59,13 @@ def main() -> None:
         tool_input.get("record"),
         resolve_composite(tool_input),
         resolve_threshold(tool_input, os.environ),
+        review_lane=tool_input.get("review_lane") or (),
+        # D-101: ALL of the predicate's conditions are applied here, not four of six. The hook
+        # used to pass neither of these two, so it and `gate_upsert` applied different rules —
+        # untested, since v0.27.0. `required_fields` denied in the safe direction and
+        # `review_lane` in the unsafe one, which is exactly why neither was noticed.
+        required_fields=tool_input.get("required_fields") or (),
+        min_populated_fields=resolve_min_populated(tool_input, os.environ),
     )
     if reasons:
         emit("deny", "; ".join(reasons))

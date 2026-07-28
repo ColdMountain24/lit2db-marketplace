@@ -33,6 +33,26 @@ from __future__ import annotations
 # (`routing.auto_accept_threshold`); no domain-calibrated number is baked into this scaffold.
 DEFAULT_AUTOACCEPT = 0.95
 
+# How many of a record's fields must actually carry a value for it to reach the ML-ready table.
+#
+# ZERO IS THE SHIPPED DEFAULT and it means "no completeness condition" — byte-for-byte the
+# behaviour before this existed, so no project changes because the mechanism arrived. The number
+# is CALIBRATED PER PROJECT and belongs in the ratified instantiation, exactly like the accept
+# threshold; nothing domain-specific is decided here.
+#
+# Why the condition exists at all. Measured on 237 records against a collaborator's own database,
+# across two arms, one of which was a pre-registered held-out slice that had no hand in finding
+# the rule: precision rises with the number of populated fields (discovery 37% -> 47%, held-out
+# 64% -> 77%), and it keeps rising INSIDE the adversarial judge's supported set (86% at five
+# fields against 62% at four). It out-predicts both signals that are in the confidence formula.
+#
+# It is a RECORD-LEVEL CONDITION rather than a term in the score, and that is not a stylistic
+# choice. The composite is a weakest-link minimum over per-field confidences; how complete a
+# record is, is a fact about the whole record. Putting a record-level fact inside a per-field
+# mean is exactly the shape error D-079 removed the adversarial judge for, and repeating it here
+# would be worse for having the precedent.
+DEFAULT_MIN_POPULATED_FIELDS = 0
+
 # Routes that must never reach the ML-ready view (blueprint 6 + ratified addition D1).
 BLOCKING_ROUTES = ("quarantine", "human_review")
 
@@ -131,6 +151,55 @@ def resolve_threshold(tool_input=None, env=None, default: float = DEFAULT_AUTOAC
     return default
 
 
+def resolve_min_populated(tool_input=None, env=None,
+                          default: int = DEFAULT_MIN_POPULATED_FIELDS) -> int:
+    """The completeness condition, same precedence as the threshold: the call's own
+    `min_populated_fields` arg > `LIT2DB_MIN_POPULATED_FIELDS` in the environment > 0.
+
+    Exists so the PreToolUse hook and `gate_upsert` reach the SAME number from the same rule.
+    A condition the tool applies and the hook does not would put the two enforcement points in
+    disagreement, which is the one failure mode this module is shaped to prevent — and a
+    hook that is quietly laxer than the tool is how a gate becomes advisory.
+    """
+    a = _as_float((tool_input or {}).get("min_populated_fields"))
+    if a is not None and a >= 0:
+        return int(a)
+    e = _as_float((env or {}).get("LIT2DB_MIN_POPULATED_FIELDS"))
+    if e is not None and e >= 0:
+        return int(e)
+    return default
+
+
+def populated_fields(record, review_lane=()) -> list:
+    """The field names that actually carry a value, sorted. Presence is not population.
+
+    A field emitted as `""`, `[]` or `{}` answers nothing while occupying a slot, so counting it
+    would inflate the very signal the condition is built on — and an extractor under instruction
+    to fill a schema is exactly the thing that emits empty strings.
+
+    Review-lane fields do not count. They are HELD, not written (`output.upsert` strips them), so
+    counting one toward completeness would let a field that is not part of the row satisfy a
+    condition about the row.
+    """
+    lane = set(review_lane or ())
+    out = []
+    for fv in (record or {}).get("fields") or []:
+        if not isinstance(fv, dict):
+            continue
+        name = fv.get("field_name")
+        if not name or name in lane:
+            continue
+        v = fv.get("value")
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        if isinstance(v, (list, dict, tuple, set)) and not v:
+            continue
+        out.append(name)
+    return sorted(out)
+
+
 def judge_veto_reasons(record):
     """The adversarial judge's veto, alone. Empty list means the judge cleared this record.
 
@@ -167,7 +236,8 @@ def judge_veto_reasons(record):
 
 def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
                       require_contradiction_search: bool = False, review_lane=(),
-                      required_fields=()):
+                      required_fields=(),
+                      min_populated_fields: int = DEFAULT_MIN_POPULATED_FIELDS):
     """Every reason this record fails SELECTION — the whole gate except the judge's veto.
 
     Split out of `gate_reasons` for one caller: the wave driver, which needs to know who
@@ -186,7 +256,8 @@ def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_
       2. neither the record nor any field routes to quarantine / human_review,
       3. every field carries provenance whose source_status is 'active' — a retracted or
          superseded source never lands, however confident the extraction was,
-      4. no field carries counter-evidence from its own source.
+      4. no field carries counter-evidence from its own source,
+      5. the record populates at least `min_populated_fields` of them (0 = off, the default).
 
     Condition 4 is a BLOCK, not a penalty. Every confidence signal scores the span the
     extractor chose to surface; a contradiction says that choice was unrepresentative, and
@@ -231,6 +302,18 @@ def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_
         reasons.append(f"locked field '{name}' is absent")
 
     lane = set(review_lane or ())
+
+    # The completeness condition. It is the same mechanism as `required_fields` — held out of
+    # the ML-ready table, still in the candidate pool with the reason attached — asking "how
+    # many" instead of "which". `required_fields` says a named field is indispensable;
+    # this says a sparse record has not earned the table regardless of WHICH fields are thin.
+    if min_populated_fields:
+        got = populated_fields(record, lane)
+        if len(got) < min_populated_fields:
+            reasons.append(
+                f"record populates {len(got)} field(s) ({', '.join(got) or 'none'}) < the "
+                f"calibrated minimum {min_populated_fields} — a sparse record is measurably "
+                f"more often wrong; it stays in the candidate pool with its evidence attached")
     for i, fv in enumerate(fields):
         if not isinstance(fv, dict):
             reasons.append(f"field #{i} is not an object")
@@ -274,7 +357,8 @@ def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_
 
 def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
                  require_contradiction_search: bool = False, review_lane=(),
-                 required_fields=()):
+                 required_fields=(),
+                 min_populated_fields: int = DEFAULT_MIN_POPULATED_FIELDS):
     """Every reason this record must NOT be written. An empty list means the write passes.
 
     THE write predicate — the one both enforcement points call (`gate_upsert` and the PreToolUse
@@ -286,5 +370,6 @@ def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOA
     past.
     """
     return (selection_reasons(record, composite_confidence, autoaccept,
-                              require_contradiction_search, review_lane, required_fields)
+                              require_contradiction_search, review_lane, required_fields,
+                              min_populated_fields)
             + judge_veto_reasons(record))
