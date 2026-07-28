@@ -64,6 +64,7 @@ from lit2db.fuse import Fuse, FuseExceeded                    # noqa: E402
 from lit2db.output import record_candidate, upsert
 from lit2db.structures import resolve_structure, structure_fields            # noqa: E402
 from lit2db.scoring import score_and_route                    # noqa: E402
+from lit2db.contracts import DEFAULT_WEIGHTS, required_agreement  # noqa: E402
 # THE PIPELINE ITSELF NOW LIVES IN THE LIBRARY. It used to live here, and scoring/gating were
 # reached by loading the MCP server file as a module — so the code that ran and the code that
 # shipped were two different things. This file is a DRIVER now: config, resume, manifests, token
@@ -396,7 +397,15 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     scored = []
     for r in records:
         sr = score_and_route(record=r, weights_key=cfg.get("weights_key", "numeric"),
-                                 ensemble_k=len(cfg["models"]), ensemble_min_agreeing=0,
+                                 # k=1 has no ensemble to speak of. Passing ensemble_k=1 is
+                                 # refused by the contract on purpose: one pass agrees with
+                                 # itself, so it would assert agreement nobody measured. Pass 0
+                                 # instead, which is the contract's own documented way to run
+                                 # without the signal — an absent c_ensemble routes to human
+                                 # review and fails closed, rather than passing for free.
+                                 ensemble_k=(len(cfg["models"])
+                                             if len(cfg["models"]) > 1 else 0),
+                                 ensemble_min_agreeing=0,
                                  review_lane=cfg.get("review_lane", []))
         scored.append({"record": sr, "composite": sr.get("_composite_confidence") or 0.0})
 
@@ -627,6 +636,63 @@ def wait_for_offpeak(start_hour: int | None) -> None:
         time.sleep(wait)
 
 
+def preflight(cfg: dict, papers: list) -> list[str]:
+    """Every contract check the wave will need, run BEFORE the first model call (D-095).
+
+    The rule this implements: a refusal about the OPERATOR'S CONFIGURATION floats and waits; a
+    refusal about what enters the DATABASE stays hard and silent. Configuration refusals used to
+    fire mid-run — `ensemble_k must be >= 2` killed six papers one at a time, and each had
+    already paid for its extraction before the scoring stage rejected the setup. Nothing about
+    that check needed a model call to run.
+
+    Returns a LIST of problems rather than raising on the first, because an operator fixing a
+    config wants all of them at once, not one per attempt.
+    """
+    problems: list[str] = []
+    models = cfg.get("models") or []
+    if not models:
+        problems.append("`models` is empty — there is nothing to run.")
+    elif len(models) > 1:
+        try:
+            required_agreement(len(models), cfg.get("ensemble_min_agreeing") or None)
+        except ValueError as exc:
+            problems.append(f"ensemble: {exc}")
+
+    wk = cfg.get("weights_key", "numeric")
+    if wk not in DEFAULT_WEIGHTS:
+        # `score_and_route` silently falls back to "numeric" on an unknown key, so a typo in a
+        # ratified profile name would score the whole wave under the wrong weights and say
+        # nothing. Caught here rather than discovered in the results.
+        problems.append(f"weights_key {wk!r} is not a known profile "
+                        f"(known: {sorted(DEFAULT_WEIGHTS)}) — scoring would silently fall "
+                        f"back to 'numeric' and the wave would be scored under weights nobody "
+                        f"chose.")
+
+    for key in ("extract_prompt", "judge_prompt", "hunter_prompt"):
+        f = cfg.get(key)
+        if not f or not pathlib.Path(f).exists():
+            problems.append(f"{key} not found: {f}")
+        elif key == "extract_prompt":
+            body = pathlib.Path(f).read_text(encoding="utf-8")
+            for token in ("{STORE}", "{OUT_DIR}", "{WRITES}"):
+                if token not in body:
+                    problems.append(f"extract_prompt is missing the {token} placeholder — "
+                                    f"the agent would be told to read a literal path.")
+
+    stores = pathlib.Path(cfg.get("stores", ""))
+    missing = [p for p in papers if not (stores / p / "full.txt").exists()]
+    if missing:
+        problems.append(f"{len(missing)} of {len(papers)} papers have no store on disk "
+                        f"(first: {missing[:3]})")
+
+    ids = cfg.get("identity_fields") or {}
+    if not ids:
+        problems.append("`identity_fields` is empty — passes cannot be aligned, so every "
+                        "record would look like a singleton.")
+    return problems
+
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, help="wave config JSON")
@@ -662,6 +728,15 @@ def main() -> int:
         json.loads(pathlib.Path(cfg["papers"]).read_text())
     if a.limit:
         papers = papers[:a.limit]
+
+    problems = preflight(cfg, papers)
+    if problems:
+        log(f"REFUSING TO START — {len(problems)} configuration problem(s), none of which "
+            f"needed a model call to find:")
+        for i, why in enumerate(problems, 1):
+            log(f"  {i}. {why}")
+        log("Nothing was run and nothing was spent. Fix these and re-run.")
+        return 2
     todo = [p for p in papers if not (out / p / "scored.json").exists()]
 
     # A RESUMED PAPER IS STILL A PAPER IN THIS WAVE. `todo` correctly skips work already on

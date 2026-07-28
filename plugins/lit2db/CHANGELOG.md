@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.42.0 — 2026-07-28
+A configuration refusal costs a question, not a night.
+
+The architectural rule ratified as D-095: **a refusal that protects the DATABASE stays hard and
+silent; a refusal that rejects the OPERATOR'S CONFIGURATION floats and waits.** Of the codebase's
+20 hard-failure sites, 12 guard what gets written and 2 guard silent emptiness — those are the
+mechanism that made quality trustworthy and they do not move. The other 6 are configuration, and
+**both of the validation arm's losses came from that group**: the fuse ceiling cost a whole
+overnight run, and `ensemble_k must be >= 2` killed six papers one at a time, each after paying
+for its own extraction.
+
+- **`preflight()` runs every contract check the wave needs before the first model call.**
+  Ensemble arity, weights profile, prompt files and their placeholders, a store on disk for every
+  paper, a non-empty identity chain. It reports **all** problems at once — an operator fixing a
+  config wants the list, not one per attempt — and exits without spending anything.
+- **`k=1` is now a supported configuration.** The driver passes `ensemble_k=0` rather than 1,
+  which is the contract's own documented way to run without the signal: `c_ensemble` is left
+  UNSET and an absent signal routes to human review. It does not get set to a free 1.0, which
+  would have asserted agreement nobody measured — and would have flattered a k=1 experiment in
+  exactly the direction the experiment was testing.
+- **Found while building it**: `score_and_route` silently falls back to the `numeric` profile on
+  an unknown `weights_key`, so a typo in a ratified profile name would score an entire wave under
+  weights nobody chose and say nothing. Preflight now refuses it.
+
 ## 0.41.0 — 2026-07-28
 Structures get resolved by the pipeline that actually runs — and the resolver could not reach PubChem.
 
