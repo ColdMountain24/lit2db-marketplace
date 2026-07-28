@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lit2db — confirm candidates</title>
+<style>
+  /* Two panes that must not read as one surface. LEFT is the finding — the row that would go
+     into their table, plus the machinery's account of why it did not. RIGHT is the paper, and
+     it is set to look like one: serif, warm, wide margins, no controls anywhere in it. A
+     reviewer should never have to work out which side is the claim and which is the evidence. */
+  :root {
+    --ui-bg: #f2f0ec; --ui-panel: #fbfaf9; --ui-ink: #1a1815; --ui-dim: #6d675e;
+    --line: #ddd8cf; --rule: #c9c2b6;
+    --paper: #fffdf8; --paper-ink: #201d18;
+    --mark: #ffe9a8; --mark-line: #cf9f00;
+    --yes: #1c7147; --no: #9d3018; --warn-bg: #fff4de; --warn-line: #cf9f00;
+    --accent: #2f5d8a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ui-bg: #101215; --ui-panel: #171a1f; --ui-ink: #e9e7e3; --ui-dim: #948e85;
+      --line: #272b32; --rule: #363b44;
+      --paper: #1c1f25; --paper-ink: #e6e3dd;
+      --mark: #5e4a10; --mark-line: #d7a91f;
+      --yes: #5cc98d; --no: #ec8f78; --warn-bg: #2b2415; --warn-line: #b8912a;
+      --accent: #7fb0e0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--ui-bg); color: var(--ui-ink);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid; grid-template-columns: minmax(420px, 1fr) 1fr; grid-template-rows: 100%;
+  }
+  @media (max-width: 980px) { body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } }
+
+  .pane { overflow-y: auto; height: 100%; }
+  #left  { background: var(--ui-panel); border-right: 1px solid var(--rule); }
+  #right { background: var(--paper); color: var(--paper-ink); }
+  .inner { padding: 0 30px 70px; }
+
+  /* Each pane says what it is, and the labels stay put while the content scrolls. */
+  .banner {
+    position: sticky; top: 0; z-index: 5; padding: 13px 30px 11px;
+    background: inherit; border-bottom: 1px solid var(--line);
+    font-size: 11.5px; letter-spacing: .11em; text-transform: uppercase; color: var(--ui-dim);
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  }
+  #right .banner { color: var(--ui-dim); }
+  .banner .n { letter-spacing: .03em; text-transform: none; font-size: 12.5px; }
+  .banner b { color: var(--ui-ink); font-weight: 600; }
+  #right .banner b { color: var(--paper-ink); }
+
+  h2.sec { font-size: 11.5px; letter-spacing: .11em; text-transform: uppercase;
+           color: var(--ui-dim); font-weight: 600; margin: 26px 0 9px; }
+
+  /* THE ROW. Shown as the table row it would become, because that is the thing the researcher
+     is actually being asked about — not "a record", their row. Scrolls sideways on its own so
+     a ten-field schema never makes the page scroll. */
+  .rowwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 7px;
+             background: var(--ui-bg); }
+  table.row { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  table.row th {
+    text-align: left; font-weight: 500; font-size: 11px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--ui-dim); padding: 9px 13px 7px;
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  table.row td { padding: 11px 13px 13px; vertical-align: top; font-size: 16px;
+                 white-space: nowrap; }
+  table.row td.empty { color: var(--ui-dim); font-style: italic; font-size: 14px; }
+  table.row th.jump, table.row td.jump { cursor: pointer; }
+  table.row col.on { background: var(--warn-bg); }
+  table.row th .arrow { color: var(--mark-line); font-size: 10px; margin-left: 5px; }
+  .inferred { font-size: 11px; color: var(--ui-dim); font-style: italic; display: block;
+              white-space: normal; max-width: 26ch; margin-top: 2px; }
+  .rowhint { color: var(--ui-dim); font-size: 12.5px; margin: 8px 0 0; }
+
+  ul.why { margin: 0; padding-left: 0; list-style: none; }
+  ul.why li { margin: 0 0 7px; padding-left: 16px; text-indent: -16px; }
+  ul.why li::before { content: "— "; color: var(--ui-dim); }
+
+  details { margin: 16px 0 0; font-size: 13px; color: var(--ui-dim); }
+  details pre { white-space: pre-wrap; font-size: 12px; margin: 7px 0 0;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  summary { cursor: pointer; }
+
+  .warn { background: var(--warn-bg); border-left: 3px solid var(--warn-line);
+          padding: 12px 15px; margin: 18px 0; font-size: 14px; border-radius: 0 4px 4px 0; }
+  .warn b { display: block; margin-bottom: 4px; }
+  .warn .q { color: var(--ui-dim); font-size: 13px; margin-top: 8px; }
+
+  .verdicts { display: flex; gap: 9px; margin: 12px 0 8px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 14px; padding: 10px 16px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--ui-bg); color: var(--ui-ink);
+  }
+  button:hover:not(:disabled) { border-color: var(--ui-dim); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  button kbd { font: inherit; font-size: 11px; color: var(--ui-dim); margin-left: 6px; }
+  .v-right { border-color: var(--yes); color: var(--yes); }
+  .v-wrong { border-color: var(--no); color: var(--no); }
+  .nav { display: flex; gap: 9px; margin-top: 24px;
+         border-top: 1px solid var(--line); padding-top: 18px; }
+
+  textarea {
+    width: 100%; min-height: 60px; font: inherit; font-size: 14px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 7px; background: var(--ui-bg);
+    color: var(--ui-ink); resize: vertical;
+  }
+  label.note { display: block; font-size: 13px; color: var(--ui-dim); margin: 0 0 6px; }
+
+  /* the paper */
+  .src-title { font-family: ui-serif, Georgia, serif; font-size: 21px; line-height: 1.3;
+               margin: 26px 0 8px; }
+  .src-sub { color: var(--ui-dim); font-size: 13px; margin: 0 0 6px; }
+  .badge { font-size: 11px; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line);
+           color: var(--ui-dim); text-transform: uppercase; letter-spacing: .06em; }
+  .badge.abstract { border-color: var(--warn-line); color: var(--warn-line); }
+  .links { margin: 0 0 20px; font-size: 13.5px; }
+  .links a { color: var(--accent); text-decoration: none; margin-right: 14px;
+             border-bottom: 1px solid transparent; }
+  .links a:hover { border-bottom-color: var(--accent); }
+  .links .lead { color: var(--ui-dim); margin-right: 8px; }
+  .text { white-space: pre-wrap; font-size: 16px; line-height: 1.75; max-width: 66ch;
+          font-family: ui-serif, Georgia, "Times New Roman", serif; }
+  .text mark { background: var(--mark); color: inherit;
+               box-shadow: inset 0 -2px 0 var(--mark-line); border-radius: 2px; }
+  .text mark.flash { background: var(--mark-line); }
+  .empty { color: var(--ui-dim); font-style: italic; }
+
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+           background: var(--ui-ink); color: var(--ui-panel); padding: 10px 17px;
+           border-radius: 7px; font-size: 13.5px; opacity: 0; transition: opacity .18s;
+           pointer-events: none; max-width: 68ch; line-height: 1.45; z-index: 20; }
+  .toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="pane" id="left"><div class="banner"><span>the finding</span></div>
+  <div class="inner"><p class="src-sub">loading…</p></div></div>
+<div class="pane" id="right"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let QUEUE = [], IDX = 0, VIEW = null, META = {}, SEQ = 0;
+/* MARKS[fieldIndex] -> the id number of that field's highlight, so a value can be clicked to
+   reach ITS OWN sentence. A record routinely carries several fields quoting places thousands of
+   characters apart — one observed here quotes character 589 and character 13,396 of the same
+   paper. Scrolling to the first and stopping shows the reviewer one quote while asking them to
+   confirm five, which is the thing `lit2db-review.md` forbids, just quietly. */
+let MARKS = [];
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function toast(msg, ms = 3400) {
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("on");
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("on"), ms);
+}
+
+async function boot() {
+  const q = await (await fetch("/api/queue")).json();
+  QUEUE = q.queue || []; META = q;
+  if (!QUEUE.length) {
+    $("left").innerHTML = `<div class="banner"><span>the finding</span></div><div class="inner">
+      <h2 class="sec">nothing waiting</h2><p class="empty">${q.showing_all
+        ? "This project has no candidates the gate held back."
+        : "Every candidate has been ruled on. Restart with --all to revisit them."}</p></div>`;
+    $("right").innerHTML = "";
+    return;
+  }
+  show(0);
+}
+
+async function show(i) {
+  if (i < 0 || i >= QUEUE.length) return;
+  const mine = ++SEQ;
+  IDX = i;
+  const r = QUEUE[i];
+  const u = `/api/record?record_id=${encodeURIComponent(r.record_id)}` +
+            `&source_id=${encodeURIComponent(r.source_id)}`;
+  const view = await (await fetch(u)).json();
+  if (mine !== SEQ) return;   // superseded — a later record is the one being looked at
+  VIEW = view;
+  renderRight(); renderLeft();   // right first: it computes MARKS, which the left pane links to
+}
+
+/* The offset is a character index into the stored text, so a highlight is a slice — never a
+   search-and-replace over the rendered text, which would mark every other occurrence too and
+   defeat the one thing the offset is for. */
+function renderRight() {
+  const v = VIEW, el = $("right");
+  const links = (v.source_links || []).map((l) =>
+    `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`
+  ).join("");
+  const scope = v.source_text_scope === "abstract_only";
+  const head = `<div class="banner"><span>the paper</span>
+      <span class="n badge ${scope ? "abstract" : ""}">${
+        scope ? "abstract only"
+              : (v.source_text_scope === "full_text" ? "full text" : "stored text")}</span></div>`;
+
+  if (v.source_text == null) {
+    el.innerHTML = head + `<div class="inner"><p class="src-title">${esc(v.source_id)}</p>
+      <p class="empty">This paper is not in the store, so there is no text to show.</p>
+      ${links ? `<p class="links"><span class="lead">read it at</span>${links}</p>` : ""}</div>`;
+    MARKS = [];
+    return;
+  }
+
+  const spans = [];
+  for (const f of v.fields) for (const s of (f.anchor.spans || []))
+    if (s.start != null) spans.push([s.start, s.end]);
+  spans.sort((a, b) => a[0] - b[0]);
+
+  const merged = [];
+  for (const s of spans) {
+    const last = merged[merged.length - 1];
+    if (last && s[0] <= last[1]) last[1] = Math.max(last[1], s[1]);
+    else merged.push([s[0], s[1]]);
+  }
+
+  const t = v.source_text;
+  let html = "", at = 0, n = 0;
+  for (const [a, b] of merged) {
+    html += esc(t.slice(at, a)) + `<mark id="m${n++}">` + esc(t.slice(a, b)) + "</mark>";
+    at = b;
+  }
+  html += esc(t.slice(at));
+
+  // Which highlight belongs to which field — merged spans can absorb two adjacent quotes, so
+  // this is resolved by containment rather than by position in the list.
+  MARKS = v.fields.map((f) => {
+    const s = (f.anchor.spans || []).find((x) => x.start != null);
+    return s ? merged.findIndex(([a, b]) => s.start >= a && s.start < b) : -1;
+  });
+
+  const sections = [...new Set(v.fields.map((f) => f.section).filter(Boolean))];
+  /* No heading of our own. `build_store` writes the paper's title as the first line of
+     `full.txt`, so the text below already opens with it — printing the accession large above
+     that gives the reviewer the same paper named twice, once in the language of a database. */
+  el.innerHTML = head + `<div class="inner">
+    <p class="src-sub" style="margin-top:24px">${esc(v.source_id)} ·
+      ${t.length.toLocaleString()} characters${
+      sections.length ? " · quoted from " + esc(sections.join(", ")) : ""}</p>
+    <p class="links">${links
+      ? `<span class="lead">read the full paper at</span>${links}`
+      : `<span class="lead">no DOI or accession was recorded for this source</span>`}</p>
+    ${scope ? `<p class="src-sub">Only the abstract could be obtained, so anything the paper
+       says elsewhere is not below — that is what makes “can't tell” an honest answer here.</p>`
+       : ""}
+    <div class="text">${html}</div></div>`;
+
+  /* Scroll THIS pane only. `scrollIntoView` walks up and scrolls every scrollable ancestor,
+     which on a two-pane grid drags the left pane down too — so a record opened halfway through
+     its own field list, below the value the reviewer is meant to read first.
+
+     And only when the quote would otherwise be off screen: scrolling a highlight that is
+     already visible costs the reviewer the source header, which carries the abstract-only
+     badge and the link to the real article. */
+  const first = document.querySelector("#right mark");
+  el.scrollTop = (first && first.offsetTop > el.clientHeight - 90)
+    ? first.offsetTop - el.clientHeight / 3 : 0;
+}
+
+function renderLeft() {
+  const v = VIEW, allowed = v.verdicts_allowed || [];
+  const can = (x) => allowed.includes(x);
+
+  // The record as the table row it would become. That is the thing being ruled on — not "a
+  // record", but the row that would appear in their database if it cleared the bar.
+  const cols = v.fields.map((f, i) =>
+    `<col${MARKS[i] >= 0 ? "" : ""} id="c${i}">`).join("");
+  const heads = v.fields.map((f, i) => {
+    const j = MARKS[i] >= 0;
+    return `<th class="${j ? "jump" : ""}"${j ? ` data-fi="${i}"` : ""}>${esc(f.field_name)}${
+      j ? '<span class="arrow">▸</span>' : ""}</th>`;
+  }).join("");
+  const cells = v.fields.map((f, i) => {
+    const j = MARKS[i] >= 0;
+    const val = esc(f.value);
+    return `<td class="${val ? "" : "empty"} ${j ? "jump" : ""}"${j ? ` data-fi="${i}"` : ""}${
+      j ? ' title="jump to this value’s sentence in the paper"' : ""}>${
+      val || "not extracted"}${f.is_inferential
+        ? '<span class="inferred">reasoned, not read off the page</span>' : ""}</td>`;
+  }).join("");
+
+  const nQuotes = new Set(MARKS.filter((m) => m >= 0)).size;
+  const rowhint = nQuotes > 1
+    ? `<p class="rowhint">${nQuotes} sentences in this paper are quoted for this row —
+       click a column to jump to its own.</p>`
+    : (nQuotes === 1 ? `<p class="rowhint">Click a column to jump to its sentence.</p>` : "");
+
+  const warnings = v.fields.filter((f) => f.anchor.state !== "exact").map((f) => `
+    <div class="warn"><b>${esc(f.field_name)} — the quoted sentence could not be shown to you</b>
+      ${esc(f.anchor.explain)}
+      ${f.anchor.state === "moved" ? ` <button onclick="jump()">jump to it</button>` : ""}
+      <div class="q">Quoted: “${esc(f.quote)}”</div>
+    </div>`).join("");
+
+  const why = (v.stopped_short_because || []).map((s) => `<li>${esc(s)}</li>`).join("");
+
+  $("left").innerHTML = `
+    <div class="banner">
+      <span>the finding — as it would appear in your table</span>
+      <span class="n"><b>${IDX + 1}</b> of ${QUEUE.length}</span>
+    </div>
+    <div class="inner">
+      <h2 class="sec">${esc(v.entity_type || "record")} · from ${esc(v.source_id)}${
+        v.composite_confidence != null
+          ? ` · scored ${Number(v.composite_confidence).toFixed(2)}` : ""}</h2>
+      <div class="rowwrap"><table class="row"><colgroup>${cols}</colgroup>
+        <thead><tr>${heads}</tr></thead><tbody><tr>${cells}</tr></tbody></table></div>
+      ${rowhint}
+
+      ${warnings}
+      ${why ? `<h2 class="sec">why it stopped short</h2><ul class="why">${why}</ul>` : ""}
+      ${(v.reasons || []).length ? `<details><summary>the exact denial, as recorded</summary>
+        <pre>${esc(v.reasons.join("\n"))}</pre></details>` : ""}
+
+      <h2 class="sec">does this row look right?</h2>
+      <label class="note" for="note">Anything you want recorded with it — in your own words,
+        stored exactly as you type it.</label>
+      <textarea id="note"></textarea>
+      <div class="verdicts">
+        <button class="v-right" ${can("right") ? "" : "disabled"} onclick="rule('right')"
+          title="${can("right") ? "" : esc(v.blocked_because || "")}">
+          Yes, that's right <kbd>1</kbd></button>
+        <button class="v-wrong" ${can("wrong") ? "" : "disabled"} onclick="rule('wrong')"
+          title="${can("wrong") ? "" : esc(v.blocked_because || "")}">
+          No, that's wrong <kbd>2</kbd></button>
+        <button onclick="rule('cant_tell')">Can't tell from this <kbd>3</kbd></button>
+      </div>
+      ${!can("right") ? `<p class="rowhint">Only “can't tell from this” can be recorded here —
+         you have not been shown the evidence.</p>` : ""}
+
+      <div class="nav">
+        <button onclick="show(IDX-1)" ${IDX ? "" : "disabled"}>← previous <kbd>←</kbd></button>
+        <button onclick="show(IDX+1)" ${IDX < QUEUE.length - 1 ? "" : "disabled"}>
+          next → <kbd>→</kbd></button>
+      </div>
+      <p class="rowhint">${META.candidates_total} candidates ·
+        ${META.adjudicated_total} ruled on ·
+        ${META.ml_ready_total} confirmed rows already in the database</p>
+    </div>`;
+  $("left").scrollTop = 0;   // every record starts at its row, not where the last one ended
+  highlightCol(null);
+}
+
+function highlightCol(i) {
+  VIEW.fields.forEach((_, k) => {
+    const c = $("c" + k);
+    if (c) c.classList.toggle("on", k === i);
+  });
+}
+
+function jumpToMark(m) {
+  const pane = $("right");
+  if (!m) return;
+  pane.scrollTo({ top: Math.max(0, m.offsetTop - pane.clientHeight / 3), behavior: "smooth" });
+  m.classList.add("flash");
+  setTimeout(() => m.classList.remove("flash"), 1100);
+}
+
+function jump() { jumpToMark(document.querySelector("#right mark")); }
+
+// Delegated so the row markup carries an index rather than an escaped field name in an inline
+// handler — a value like O'Brien-2 would otherwise break out of the attribute.
+document.addEventListener("click", (e) => {
+  const cell = e.target.closest("#left [data-fi]");
+  if (!cell) return;
+  const i = Number(cell.dataset.fi);
+  highlightCol(i);
+  jumpToMark($("m" + MARKS[i]));
+});
+
+async function rule(verdict) {
+  /* Belt and braces on top of the SEQ token: if what is on screen and what is in VIEW ever
+     disagree again, the verdict must not be filed against whichever one happens to be in the
+     variable. A refusal costs a keypress; a verdict on the wrong paper is indistinguishable
+     from a real one once it is in the calibration set. */
+  const here = QUEUE[IDX];
+  if (!VIEW || !here || here.record_id !== VIEW.record_id ||
+      here.source_id !== VIEW.source_id) {
+    toast("The page lost track of which record you are looking at — nothing was recorded. " +
+          "Reloading this one.", 6000);
+    return show(IDX);
+  }
+  const note = ($("note") || {}).value || "";
+  const res = await fetch("/api/adjudicate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ record_id: VIEW.record_id, source_id: VIEW.source_id,
+                           verdict, note }),
+  });
+  const out = await res.json();
+  if (!out.recorded) { toast(out.reason || out.error || "not recorded", 8000); return; }
+  META.adjudicated_total += 1;
+  toast({ right: "Recorded: right.", wrong: "Recorded: wrong.",
+          cant_tell: "Recorded: can't tell." }[verdict]);
+  if (IDX < QUEUE.length - 1) show(IDX + 1); else renderLeft();
+}
+
+/* Arrows are the labelled shortcut because j/k means "down/up" only if you already use vim, and
+   on a left-to-right pair of buttons it reads backwards to everyone else. j/k still work,
+   silently, for the people who reach for them. */
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
+  const allowed = (VIEW && VIEW.verdicts_allowed) || [];
+  if (e.key === "ArrowRight" || e.key === "j") show(IDX + 1);
+  else if (e.key === "ArrowLeft" || e.key === "k") show(IDX - 1);
+  else if (e.key === "1" && allowed.includes("right")) rule("right");
+  else if (e.key === "2" && allowed.includes("wrong")) rule("wrong");
+  else if (e.key === "3") rule("cant_tell");
+  else return;
+  e.preventDefault();
+});
+
+boot();
+</script>
+</body>
+</html>

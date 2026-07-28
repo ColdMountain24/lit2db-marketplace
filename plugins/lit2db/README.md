@@ -131,6 +131,39 @@ can land near 0.7, where 0.95 would auto-accept almost nothing. Set it in your p
 override it per run with `LIT2DB_AUTOACCEPT`. No domain-calibrated number is baked into the
 scaffold — that is the point of the two-layer split.
 
+The labels that calibration needs do not have to be commissioned. A researcher confirming
+candidates **is** the labelled data, and 30–50 records is enough to tell a good configuration
+from a bad one. Two ways to collect them, same calibration set:
+
+```
+/lit2db-review                                   # conversational, a few records per question
+python3 scripts/review_ui.py --db p.db --sources ./sources   # in a browser, beside the paper
+```
+
+## Reviewing beside the paper
+
+```
+python3 scripts/review_ui.py          # with no database, builds a demo and says so
+```
+
+A two-pane page on `127.0.0.1`: the candidate on the left — the value, which paper it came from,
+and why it stopped short, in the researcher's language rather than the schema's — and on the
+right that paper's stored text with the quoted sentence **highlighted where the record says it
+is**. No PDF and no viewer: `full.txt` is the coordinate system, so a char offset is all the
+anchor a browser needs.
+
+Two properties it holds structurally, not by convention:
+
+- **A verdict never writes a record.** The page's only write is `record_adjudication`, which
+  cannot reach the ML-ready table. A confirmation is a measurement of whether the *gate* was
+  right, and spending it to bypass the gate would destroy the measurement.
+- **No verdict without the evidence.** If the quote is not at its recorded offset — moved,
+  absent, past the end of the text, or the paper was never stored — the page says which of those
+  happened, in those words, and offers only *can't tell from this*. The server re-checks and
+  returns 409, so the rule survives a stale tab as well as a disabled button.
+
+Stdlib only, one HTML file, nothing fetched from a network at review time.
+
 ## Instantiate for your own domain
 
 ```

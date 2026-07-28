@@ -218,13 +218,26 @@ def build_from_abstract(title: str, abstract: str, source_id: str,
     }
 
 
+def store_dirname(source_id: str) -> str:
+    """The directory name a store is written under, from its `source_id`.
+
+    Extracted from `write_store` because it is the store's ADDRESSING and a second copy of it
+    would be a second answer to "where does this source live". Real ids need it: a DOI arrives
+    as `DOI_10.1002/anie.201506541` and the slash must become `_` for both the writer and
+    every reader to land in the same place. Same argument as `quote_at` — a reader that
+    disagreed with the writer about this would look in a directory that does not exist and
+    report the paper missing.
+    """
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(source_id))
+
+
 def write_store(store: dict, root_dir: str | pathlib.Path) -> dict:
     """Write the store to `<root_dir>/<source_id>/` and return the paths.
 
     Three files, because the extractor reaches them with Read/Grep/Glob rather than through
     an API: `full.txt` (the offset authority), `sections.json`, `meta.json`.
     """
-    d = pathlib.Path(root_dir) / re.sub(r"[^A-Za-z0-9._-]", "_", store["source_id"])
+    d = pathlib.Path(root_dir) / store_dirname(store["source_id"])
     d.mkdir(parents=True, exist_ok=True)
     (d / "full.txt").write_text(store["full_text"], encoding="utf-8")
     (d / "sections.json").write_text(json.dumps(store["sections"], indent=2))

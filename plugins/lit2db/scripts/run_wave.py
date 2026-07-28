@@ -64,6 +64,7 @@ from lit2db.fuse import Fuse, FuseExceeded                    # noqa: E402
 from lit2db.gate import single_pass_problems                   # noqa: E402
 from lit2db.output import record_candidate, upsert
 from lit2db.structures import resolve_structure, structure_fields            # noqa: E402
+from lit2db.taxonomy import resolve_taxon, taxon_fields                      # noqa: E402
 from lit2db.scoring import score_and_route                    # noqa: E402
 from lit2db.contracts import DEFAULT_WEIGHTS, required_agreement  # noqa: E402
 # THE PIPELINE ITSELF NOW LIVES IN THE LIBRARY. It used to live here, and scoring/gating were
@@ -119,6 +120,21 @@ def _resolve_structures_for(scored: list, cfg: dict, pdir: pathlib.Path) -> None
         except Exception:                                  # noqa: BLE001
             extra = []
         rec.setdefault("fields", []).extend(extra)
+
+        # ORGANISM -> TAXON, same shape and the same reason (D-058 + the 2026-07-28 adjudication:
+        # nine of twenty-four records were one organism written two ways). ADDITIVE — the frozen
+        # genus/species fields are never rewritten, so a wave running against a frozen spec stays
+        # valid. Wired HERE and not only in an agent, because `resolve_structure` shipped
+        # interactive-only and therefore never ran on 133 records (D-094).
+        gsp = {f.get("field_name"): f.get("value") for f in rec.get("fields", [])}
+        if gsp.get("genus"):
+            try:
+                tx = resolve_taxon(str(gsp.get("genus") or ""), str(gsp.get("species") or ""))
+                rec["fields"].extend(taxon_fields(
+                    tx, rec["fields"][0]["provenance"]["source_id"], cfg["producing_process"]))
+            except Exception:                              # noqa: BLE001 — never kill a paper
+                pass
+
         audit.append({"record_id": rec["record_id"], "name": name,
                       "resolved": bool(res.get("resolved")),
                       "inchikey": res.get("inchikey"), "why": res.get("why")})

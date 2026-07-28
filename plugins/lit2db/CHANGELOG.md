@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+Candidates can be confirmed beside the paragraph they came from.
+
+`/lit2db-review` collects the labels this project spent weeks calling a blocker, and it collects
+them through `AskUserQuestion` — which can show a reviewer the quote and **nothing around it**.
+That is the wrong constraint to put on the answer. A sentence with no paragraph around it is
+exactly where a careful reader says "can't tell" for want of CONTEXT rather than for want of
+ACCESS, and only one of those two is a fact about the extractor. Every such answer is a row the
+calibration set does not get, blamed on the literature instead of on the interface.
+
+`scripts/review_ui.py` serves a two-pane page on `127.0.0.1`: the candidate on the left, its
+paper's stored text on the right, the quoted sentence highlighted at its recorded offset. No PDF
+and no viewer — `full.txt` is the coordinate system, so a char offset is the whole anchor.
+
+- **The join it needed did not exist.** `review_queue` selects seven columns and `payload_json`
+  is not one of them, so the quotes and offsets it took a whole pipeline to produce were
+  unreachable through any tool. New `lit2db.review` reads the candidate payload and the store
+  together, which is the substance of this change; the browser is the thin part.
+- **An offset is a CLAIM, and `anchor()` verifies it rather than assuming it.** Slicing at a
+  stale offset returns text — just not the cited text — so the failure is silent and a verdict
+  given against the wrong paragraph is indistinguishable from a good one afterwards. Five
+  outcomes, each with the sentence a researcher can act on: at its offset · elsewhere in the
+  paper · not in the paper · past the end of the text · never stored. **No fuzzy matching**,
+  because that would convert the four failing states into the passing one for exactly the
+  records most worth being suspicious of.
+- **Only the first state permits a verdict.** Anything else offers *can't tell from this* alone,
+  and the SERVER re-derives that and returns 409 — a disabled button is a suggestion to whoever
+  is at the keyboard, and the rule has to hold for a stale tab too.
+- **A verdict still never writes a record**, now across a second surface. A test asserts the new
+  files contain no reference to `gate_upsert`/`db_upsert`; a new surface is a new way around a
+  rule whose argument is not obvious enough to survive on style.
+- **Found in the browser, not by the suite: holding `j` filed a verdict against the wrong
+  paper.** Overlapping record fetches had no supersession token, so the last response to resolve
+  won the render while a different record stayed in `VIEW` — two keypresses were enough, and it
+  looked completely correct on screen. The server could not catch it: it validates the record
+  *named in the request*, and that record was itself perfectly adjudicable. Fixed with a request
+  token plus a refuse-on-disagreement check, and pinned by a test. Eleven tests had already
+  passed over this surface; the defect needed a browser and a keyboard.
+
+- **Also found by driving it, on real pilot data rather than the demo: one record's five fields
+  quoted characters 589 through 13,396 of the same 16,255-character paper.** The page opened at
+  the first highlight, so a reviewer was being asked to confirm five values while looking at
+  one — the show-the-quote rule failing *quietly*, since a quote genuinely was on screen and
+  nothing said there were three more. Each value now links to its own sentence and the count is
+  stated. The synthetic demo could not have shown this: its records carry one field each.
+
+Not released: the version is deliberately unbumped, so this ships when someone bumps both
+manifests and tags it.
+
 ## 0.45.0 — 2026-07-28
 k=1 no longer awards itself a free agreement score.
 
