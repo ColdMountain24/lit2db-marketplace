@@ -76,9 +76,9 @@ def test_this_checkout_declares_every_tool_the_manifest_version_claims():
     r = run(["--expect-version", MANIFEST_VERSION,
              "--expect-tools", str(SERVER_TOOL_COUNT)])
     assert r.returncode == 0, r.stderr
-    assert SERVER_TOOL_COUNT == 19, (
+    assert SERVER_TOOL_COUNT == 20, (
         f"server declares {SERVER_TOOL_COUNT} MCP tools; INSTALL.md and "
-        "commands/lit2db-status.md both say 19 — update them together or not at all")
+        "commands/lit2db-status.md both say 20 — update them together or not at all")
 
 
 @pytest.mark.parametrize("missing", ["manifest", "server"])

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.36.0 — 2026-07-28
+An abstract is a document you read all of, not a paper you read part of.
+
+C9/D-087 ratified extracting from the abstract where full text cannot be had, and nothing
+implemented it — `build_from_jats` was the only builder, and abstract-only sources never arrive
+as JATS. The census behind D-088 is why it matters: of the 435 usable DOIs in the collaborator's
+reference database, **82 give full text and 206 more give only an abstract**, so this is what
+makes the comparison arm 287 papers instead of 82.
+
+- `build_from_abstract` + the `build_abstract_store` MCP tool. Same coordinate contract as the
+  JATS builder — `full.txt` is the authority, offsets round-trip — so grounding, span location
+  and quoting are unchanged downstream.
+- **The scope is declared by the STORE, not judged by the extractor.** Both builders now stamp
+  `meta["source_text_scope"]`, and a record's own field is read from it. A caller cannot
+  override it with a wrong value.
+- **Kept apart from truncation, which is the D-038 distinction.** Retention asks "did you read
+  all of what you had"; `source_text_scope` asks "what did you have". An abstract read whole is
+  retained_fraction 1.0 AND abstract_only, and both are true — whereas the pilot that silently
+  read 26% of each paper was verifying values against a different document than they cited.
+- Title text is included but sits outside the Abstract section, so a claim grounded in the title
+  is not reported as coming from the abstract. Title-only records are allowed — thin, but not
+  empty — while a genuinely empty source raises rather than emitting a store nothing downstream
+  could distinguish from a paper that contained nothing.
+- **Both self-audit guards fired during this change and were right.** `test_declarations`
+  refused the new MCP tool while no command or agent referenced it; `test_selfcheck` refused the
+  20th tool while INSTALL.md and `/lit2db-status` still said 19. Neither was found by hand.
+- 549 → 564 tests. 20 MCP tools.
+
 ## 0.35.0 — 2026-07-28
 Structures are resolved, never generated.
 

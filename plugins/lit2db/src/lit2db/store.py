@@ -171,7 +171,48 @@ def build_from_jats(xml: str | bytes, source_id: str, meta: Optional[dict] = Non
         "source_id": source_id,
         "full_text": b.text,
         "sections": b.sections,
-        "meta": dict(meta or {}),
+        "meta": {**dict(meta or {}), "source_text_scope": "full_text"},
+        "stats": {"chars": len(b.text), "sections": len(b.sections),
+                  "est_tokens": round(len(b.text) / 4)},
+    }
+
+
+def build_from_abstract(title: str, abstract: str, source_id: str,
+                        meta: Optional[dict] = None) -> dict:
+    """Build a store from an abstract record, for sources whose full text cannot be had.
+
+    Same coordinate contract as `build_from_jats`: `full_text` is the authority and offsets
+    index into it. The difference is declared, not hidden — `meta["source_text_scope"]` is
+    `abstract_only`, and that is what the record's `source_text_scope` field is meant to be
+    read from rather than guessed at by the extractor.
+
+    **This is not truncation, and the distinction is the whole point.** D-038 exists because a
+    pilot silently read 26% of each paper; the fix was to record how much of a source was read,
+    since a value grounded against a fraction is verified against a different document. Here
+    the abstract IS the whole document available, so the retained fraction is 1.0 and honest.
+    The two questions stay separate: retention asks "did you read all of what you had",
+    `source_text_scope` asks "what did you have". A record that conflated them would claim a
+    complete read of a paper nobody could open.
+    """
+    b = _Builder()
+    if title and title.strip():
+        b.write(title.strip())
+    if abstract and abstract.strip():
+        # `write` returns bounds that exclude the trailing paragraph gap, so the section ends
+        # where the abstract ends -- an offset landing on the separator belongs to no section.
+        start, end = b.write(abstract.strip())
+        b.sections.append({"title": "Abstract", "start": start, "end": end, "depth": 0})
+
+    if not b.text.strip():
+        raise ValueError(f"{source_id}: no title or abstract text — refusing to emit an empty "
+                         f"store, which downstream cannot distinguish from a source that "
+                         f"genuinely had nothing to extract")
+
+    return {
+        "source_id": source_id,
+        "full_text": b.text,
+        "sections": b.sections,
+        "meta": {**dict(meta or {}), "source_text_scope": "abstract_only"},
         "stats": {"chars": len(b.text), "sections": len(b.sections),
                   "est_tokens": round(len(b.text) / 4)},
     }

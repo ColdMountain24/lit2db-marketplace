@@ -11,6 +11,9 @@ Tools exposed (one per pipeline responsibility):
   - ground_literature   Stage 4b    Deterministic span-grounding: does each value
                                      actually appear (lexically / numerically) in its quote?
   - build_store         Stage 1     JATS XML -> the offset-anchored store on disk.
+  - build_abstract_store
+                        Stage 1     Same store, built from title + abstract, for sources whose
+                                     full text cannot be had. Declares `abstract_only`.
   - locate_spans        Stage 1     Exact CHARACTER offsets for a string in a store.
   - validate_mapping    Stage 4b    Structured-adapter grounding: type/range/enum conformance.
   - merge_extraction_passes
@@ -54,7 +57,7 @@ from lit2db.contracts import (  # noqa: E402
 from lit2db.contracts.spec import SchemaReadySpec  # noqa: E402
 from lit2db.ensemble import DEFAULT_STEPS, merge_passes, summarize  # noqa: E402
 from lit2db.store import (  # noqa: E402
-    build_from_jats, find_spans, quote_at, section_of, write_store,
+    build_from_abstract, build_from_jats, find_spans, quote_at, section_of, write_store,
 )
 from lit2db.gate import gate_reasons, resolve_threshold  # noqa: E402
 from lit2db.dedup import dedupe as _dedupe  # noqa: E402
@@ -138,6 +141,31 @@ def build_store(xml: str, source_id: str, root_dir: str = "", meta: dict = {}) -
     store = build_from_jats(xml, source_id, meta=dict(meta) or None)
     paths = write_store(store, root_dir or (_PLUGIN_ROOT / "sources"))
     return {**paths, **store["stats"], "source_id": source_id,
+            "source_text_scope": store["meta"]["source_text_scope"],
+            "sections": [s["title"] for s in store["sections"]]}
+
+
+@mcp.tool()
+def build_abstract_store(title: str, abstract: str, source_id: str, root_dir: str = "",
+                         meta: dict = {}) -> dict:
+    """Build the Stage-1 store from an abstract, for a source whose full text cannot be had.
+
+    Same coordinate contract as `build_store` — `full.txt` is the authority and offsets index
+    into it — so everything downstream (grounding, span location, quoting) behaves identically.
+
+    **Use this only when full text is genuinely unavailable, never to shorten a paper you
+    could have read.** The returned `source_text_scope` is `abstract_only`, and that is what a
+    record's own `source_text_scope` must be set from rather than guessed at. The distinction
+    it preserves: reading all of a document that happens to be an abstract is honest, whereas
+    reading part of a full paper and not saying so verifies values against a different
+    document than the one they cite.
+
+    Raises rather than emitting an empty store, on the same grounds as `build_store`.
+    """
+    store = build_from_abstract(title, abstract, source_id, meta=dict(meta) or None)
+    paths = write_store(store, root_dir or (_PLUGIN_ROOT / "sources"))
+    return {**paths, **store["stats"], "source_id": source_id,
+            "source_text_scope": store["meta"]["source_text_scope"],
             "sections": [s["title"] for s in store["sections"]]}
 
 

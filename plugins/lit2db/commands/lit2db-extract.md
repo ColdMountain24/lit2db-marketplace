@@ -24,6 +24,17 @@ manual-acquisition queue (`rank_manual_queue`) and stop — **never reach around
 `build_store` writes `sources/<source_id>/full.txt`, which is the coordinate system: every
 offset from here on is an index into that exact file.
 
+**If the source is indexed but its full text cannot be had**, and the project's ratified scope
+admits abstracts, call `build_abstract_store` instead. It produces the same coordinate system
+from the title and abstract, so every later stage behaves identically. Two rules about it:
+
+- Use it only when full text is genuinely unavailable — **never to shorten a paper you could
+  have read.** Reading all of a document that happens to be an abstract is honest; reading part
+  of a full paper without saying so verifies values against a different document than they cite.
+- Carry the returned `source_text_scope` onto every record from that store. It is reported by
+  the store, not judged by the extractor, so the evidence standard of a value is a fact about
+  where it came from rather than a claim the model makes about itself.
+
 ## 2 — k independent extraction passes
 
 Run the `extractor-agent` **k times** (default 3) over the same store.
