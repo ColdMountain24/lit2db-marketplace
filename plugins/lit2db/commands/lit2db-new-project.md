@@ -15,6 +15,29 @@ Do this:
    researcher** to move each to ACCEPTED / ACCEPTED_WITH_EDIT / REJECTED. Do not freeze a
    schema until every field traces to a ratified item.
 
+## Arriving from `/lit2db-start`
+
+`/lit2db-start` hands off here with an intake already collected. When it does, **run a
+confirmation pass, not a second questionnaire** — a researcher asked the same thing twice in
+different words concludes the tool was not listening, and starts clicking through.
+
+Two kinds of item arrive and they are NOT interchangeable:
+
+- **Stated by the researcher** — their words for the row, the fields, the literature, the
+  exclusions. Put their phrasing in front of them and confirm it. One pass, quick.
+- **Derived by the agent** — the query, identity chain, negative-data policy, evidence tiers,
+  provenance granularity. The researcher has never seen these. Each gets the full
+  propose-and-ratify treatment, and each is labelled as the agent's proposal when shown.
+
+**Never present a derived item as though the researcher had already agreed to it.** That is
+precisely how two fields once froze into the BBB schema citing ledger items that did not exist,
+under a note claiming they were researcher-ratified. The scaffold was correct both times; the
+work was routed around it.
+
+**No axis is skipped because the intake "probably covers it."** Speed comes from confirming a
+concrete proposal, never from asking less. If the intake leaves an axis untouched, say so and
+walk it properly.
+
 The hard boundary (NORMATIVE): you MAY enumerate axes, surface existing vocabularies, derive
 candidate fields from the researcher's declared ML task + unit of analysis, and propose
 structural alternatives. You MUST NOT invent the research question, decide what is

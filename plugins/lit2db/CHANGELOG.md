@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.44.0 — 2026-07-28
+`/lit2db-start` hands off to the full interview instead of running on four answers.
+
+The friendly intake and the rigorous ratification are now one flow: `/lit2db-start` collects four
+questions in the researcher's language, then invokes `/lit2db-new-project` with everything
+carried forward, so Stage-0.5 is a **confirmation pass rather than a second questionnaire**. A
+researcher asked the same thing twice in different words concludes the tool was not listening,
+and starts clicking through — which is the failure mode this whole design is trying to avoid.
+
+- **Two kinds of item cross the handoff and they are not interchangeable.** What the researcher
+  STATED arrives with their own phrasing and is confirmed ("you said X — is that right?"). What
+  the agent DERIVED — query, identity chain, negative-data policy, evidence tiers, provenance
+  granularity — gets the full propose-and-ratify treatment and is labelled as the agent's
+  proposal when shown.
+- **Never present a derived item as already agreed.** That is exactly how two fields once froze
+  into the BBB schema citing ledger items that did not exist, under a note claiming they were
+  researcher-ratified. The scaffold was correct both times; the work was routed around it.
+- **No axis is skipped because the intake "probably covers it."** Speed comes from confirming a
+  concrete proposal, never from asking less.
+
 ## 0.43.0 — 2026-07-28
 `/lit2db-start` — a front door for a researcher who knows their field and nothing about this tool.
 
