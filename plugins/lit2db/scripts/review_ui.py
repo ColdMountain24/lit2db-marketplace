@@ -48,7 +48,8 @@ sys.path.insert(0, str(ROOT / "src"))
 os.environ.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
 
 from lit2db.gate import resolve_threshold  # noqa: E402
-from lit2db.output import record_adjudication, record_candidate, review_queue  # noqa: E402
+from lit2db.output import (record_adjudication, record_candidate,  # noqa: E402
+                           review_queue, tag_adjudicator)
 from lit2db.review import ALL_VERDICTS, may_record, record_view  # noqa: E402
 from lit2db.store import build_from_abstract, find_spans, write_store  # noqa: E402
 
@@ -208,8 +209,11 @@ class _Handler(BaseHTTPRequestHandler):
         if refusal:
             return self._json(409, {"recorded": False, "reason": refusal})
 
+        # Tagged here rather than left to the CLI default, so `--adjudicator alice` still records
+        # the surface. Which path a verdict came from is a property of the path, not a setting.
         result = record_adjudication(rid, sid, verdict, self.cfg["db"], note=note,
-                                     adjudicator=self.cfg["adjudicator"])
+                                     adjudicator=tag_adjudicator(self.cfg["adjudicator"],
+                                                                 "browser"))
         return self._json(200 if result.get("recorded") else 400, result)
 
     # -- the two reads

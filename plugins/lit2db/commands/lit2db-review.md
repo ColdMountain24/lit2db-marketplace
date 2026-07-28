@@ -65,7 +65,13 @@ Report `calibration_report`, and report it honestly:
 - precision per bucket with its sample size and 95% interval. **A bucket of three reading 100%
   is not a finding**; say so rather than printing it bare;
 - what the table implies for where the bar could sit — as *options with their costs*, never as
-  a recommendation the plugin has already acted on.
+  a recommendation the plugin has already acted on;
+- **`by_surface`, if verdicts came from more than one place.** This loop and the browser reviewer
+  (`/lit2db-review-ui`) write the same table but do not apply the same conditions: the browser
+  refuses "right"/"wrong" outright when it cannot show the quote, and here that rule depends on
+  you honouring it. If the two columns disagree sharply — usually a much higher `cant_tell` share
+  in the browser's — say so, because the difference is partly a measurement of how each surface
+  asked rather than of the extractor.
 
 **Do not change the accept threshold.** Where it sits is a promise to whoever uses this database
 about how wrong it is allowed to be. Show them what each setting would buy and let them ratify

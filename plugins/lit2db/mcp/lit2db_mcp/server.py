@@ -69,7 +69,8 @@ from lit2db.grounding import (ground_literature as _ground,  # noqa: E402
 from lit2db.output import (adjudications as _adjudications,  # noqa: E402
                            query as _query, record_adjudication as _record_adjudication,
                            record_candidate as _record_candidate,
-                           review_queue as _review_queue, upsert as _upsert)
+                           review_queue as _review_queue,
+                           tag_adjudicator as _tag_adjudicator, upsert as _upsert)
 from lit2db.calibration import (frontier as _cal_frontier,  # noqa: E402
                                 precision as _cal_precision, render as _cal_render,
                                 table as _cal_table)
@@ -609,9 +610,18 @@ def record_adjudication(record_id: str, source_id: str, verdict: str, db_path: s
     **It cannot write to the ML-ready table and is not a write tool.** Saying a record is right
     is a statement about whether the GATE was right, and letting it place the row would consume
     the measurement it exists to produce.
+
+    The verdict is tagged `(chat)` because THIS TOOL IS the conversational surface — the browser
+    reviewer calls the library directly and tags itself `(browser)`. That makes the tag a
+    property of the path rather than something a caller has to remember, which matters because
+    the two paths do not apply the same conditions: the browser mechanically refuses right/wrong
+    when a record's quote could not be shown, and this one asks an agent to honour that in prose.
+    `adjudications()` reports per surface so the difference can be measured instead of assumed
+    away.
     """
     return _record_adjudication(record_id, source_id, verdict, db_path or DB_PATH,
-                                note=note, adjudicator=adjudicator)
+                                note=note,
+                                adjudicator=_tag_adjudicator(adjudicator, "chat"))
 
 
 @mcp.tool()
@@ -626,8 +636,17 @@ def calibration_report(db_path: str = "", bucket_by: str = "completeness") -> di
     this scaffold picks. `cant_tell` verdicts are held out of every denominator and counted
     separately, so a table resting on ten verifiable records cannot be mistaken for one resting
     on a hundred.
+
+    `by_surface` breaks the same verdicts down by WHERE they were given, because the two review
+    paths do not apply the same conditions — the browser refuses right/wrong when a record's
+    quote could not be shown, the conversational loop asks an agent to. A large gap in the
+    `cant_tell` share between the two columns means the calibration set is partly measuring how
+    each surface asks, and the pooled figure alone would never reveal it. Report it beside the
+    precision table rather than instead of it; with both paths in use, "how was this gathered"
+    is part of what the number means.
     """
-    rows = _adjudications(db_path or DB_PATH)["adjudications"]
+    adj = _adjudications(db_path or DB_PATH)
+    rows = adj["adjudications"]
     keys = {
         "completeness": lambda r: r.get("n_populated_fields", 0),
         "judge": lambda r: r.get("judge_verdict") or "not_run",
@@ -638,7 +657,7 @@ def calibration_report(db_path: str = "", bucket_by: str = "completeness") -> di
         return {"ok": False, "reason": f"bucket_by must be one of {sorted(keys)}"}
     rows_table = _cal_table(rows, keys[bucket_by])
     return {"ok": True, "bucket_by": bucket_by, "n_adjudicated": len(rows),
-            "overall": _cal_precision(rows), "table": rows_table,
+            "overall": _cal_precision(rows), "by_surface": adj["by_surface"], "table": rows_table,
             "rendered": _cal_render(rows_table, label=bucket_by),
             "frontier": _cal_frontier(
                 rows, lambda r: (float(r["composite_confidence"])

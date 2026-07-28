@@ -48,6 +48,12 @@ Same as `/lit2db-review`: report `calibration_report` honestly — how many they
 how many of those were verifiable, precision per bucket with its sample size and interval, and
 what the table implies for where the bar *could* sit, as options with their costs.
 
+Verdicts given here are recorded as coming from the browser, and `calibration_report` breaks the
+counts down by surface. **Report that split whenever both surfaces have been used.** The two do
+not apply the same conditions — this one refuses "right"/"wrong" when it cannot show the quote,
+the conversational loop asks an agent to — so a sharp gap between the columns means part of what
+the calibration set measured is how the question was put, not how good the extractor is.
+
 **Do not change the accept threshold.** Where it sits is a promise to whoever uses this database
 about how wrong it is allowed to be. That number belongs in the project's instantiation, ratified
 and written down — not in a tool call, and not in a browser.

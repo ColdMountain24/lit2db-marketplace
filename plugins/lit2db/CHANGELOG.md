@@ -46,8 +46,38 @@ and no viewer — `full.txt` is the coordinate system, so a char offset is the w
   nothing said there were three more. Each value now links to its own sentence and the count is
   stated. The synthetic demo could not have shown this: its records carry one field each.
 
-Not released: the version is deliberately unbumped, so this ships when someone bumps both
-manifests and tags it.
+- **A verdict now records WHICH SURFACE it was given on, because the two do not ask the same
+  question.** Both write the same table with the same three verdicts, so the calibration set is
+  identical in kind — but the browser mechanically refuses `right`/`wrong` when a record's quote
+  could not be shown, while `/lit2db-review` states that rule in prose for an agent to honour.
+  Two paths that can produce differently-distributed labels from one corpus, and nothing recorded
+  which path a row came from, so the difference was unmeasurable rather than absent. The tag
+  rides on `adjudicator` rather than a new column, so **every verdict already collected survives
+  and reads as `unknown`** — checked against the 24 real ones, whose pooled counts are unchanged.
+  `adjudications()` and `calibration_report` now break the counts down by surface; a large gap in
+  the `cant_tell` share between columns means part of what was measured is how the question was
+  put. Tagging happens at each path's own boundary — the MCP tool tags `chat` because it *is* the
+  conversational surface — so it cannot be forgotten by a caller.
+
+### What commit `77d587f` actually contains
+
+Most of the above shipped inside **`77d587f` — "v0.48.0 — organism resolves to NCBI Taxonomy,
+additively (D-106)"**, whose message describes only the other half of it. This work was written to
+be staged and not committed; a concurrent session working in the same tree bumped both manifests to
+0.48.0 and committed, and its commit swept in whatever was staged. So one commit carries two
+unrelated changes:
+
+- organism authority resolution — `src/lit2db/taxonomy.py`, `tests/test_taxonomy.py`, `run_wave.py`
+- the browser reviewer — `scripts/review_ui.{py,html}`, `src/lit2db/review.py`,
+  `tests/test_review_ui.py`, `commands/lit2db-review-ui.md`, and the `store_dirname` extraction
+
+**The history is deliberately not rewritten.** `77d587f` was already pushed to the public
+marketplace repo that `/plugin install` reads, so splitting it would mean force-pushing over
+history other people may hold — a real risk taken to fix a cosmetic one. This note is the fix
+instead: the commit message stays wrong and the record here is right.
+
+Two things this leaves open, neither introduced by it: the log still has no `0.46.0`, `0.47.0` or
+`0.48.0` heading while both manifests read 0.48.0; and `pyproject.toml` still reads `0.5.0`.
 
 ## 0.45.0 — 2026-07-28
 k=1 no longer awards itself a free agreement score.

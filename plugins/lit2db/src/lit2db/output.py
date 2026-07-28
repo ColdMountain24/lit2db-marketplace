@@ -225,6 +225,42 @@ def record_candidate(record: dict, composite_confidence: float, gate_result: dic
 # state everywhere else in this system; it is a third state here too.
 ADJUDICATION_VERDICTS = ("right", "wrong", "cant_tell")
 
+# WHERE a verdict was given, recorded beside WHO gave it.
+#
+# Both review surfaces write this same table with the same three verdicts, so the calibration set
+# is identical in kind either way. They do NOT apply the same conditions. The browser refuses
+# `right`/`wrong` mechanically when a record's quote could not be put in front of the reviewer;
+# `/lit2db-review` states that rule in prose and asks an agent to honour it. Two paths that can
+# produce differently-distributed labels from one corpus, and nothing said which path a row came
+# from — so the difference was unmeasurable rather than absent.
+#
+# A tag on `adjudicator` rather than a new column: the table already carries who, this is part of
+# who, and a schema change would strand every row already collected. Untagged rows read as
+# `unknown`, which is what they honestly are.
+SURFACES = ("browser", "chat", "unknown")
+
+
+def tag_adjudicator(adjudicator: str, surface: str) -> str:
+    """`("researcher", "browser")` -> `"researcher (browser)"`. Idempotent.
+
+    Idempotent because both callers pass through a wrapper that tags, and a value that had been
+    tagged twice would split into its own bucket and quietly halve a comparison.
+    """
+    name = str(adjudicator or "researcher").strip() or "researcher"
+    s = str(surface or "").strip().lower()
+    if s not in SURFACES or s == "unknown":
+        return name
+    return name if name.endswith(f"({s})") else f"{name} ({s})"
+
+
+def surface_of(adjudicator: str) -> str:
+    """The surface a stored verdict came from, or `unknown` for rows written before this."""
+    name = str(adjudicator or "")
+    for s in SURFACES:
+        if s != "unknown" and name.endswith(f"({s})"):
+            return s
+    return "unknown"
+
 
 def record_adjudication(record_id: str, source_id: str, verdict: str, db_path: str,
                         note: str = "", adjudicator: str = "researcher") -> dict:
@@ -291,12 +327,22 @@ def adjudications(db_path: str, verdict: str = "") -> dict:
             except (TypeError, ValueError):
                 payload = {}
         out.append({"record_id": r[0], "source_id": r[1], "verdict": r[2], "note": r[3],
-                    "adjudicator": r[4], "composite_confidence": r[5], "gate_decision": r[6],
+                    "adjudicator": r[4], "surface": surface_of(r[4]),
+                    "composite_confidence": r[5], "gate_decision": r[6],
                     "judge_verdict": r[7], "entity_type": r[8],
                     "n_populated_fields": len(_populated_names(payload)),
                     "populated_fields": _populated_names(payload)})
     counts = {v: sum(1 for o in out if o["verdict"] == v) for v in ADJUDICATION_VERDICTS}
-    return {"n": len(out), "counts": counts, "adjudications": out}
+    # Per surface, so the two review paths can be COMPARED rather than assumed equivalent. The
+    # browser refuses right/wrong without visible evidence and the conversational loop does not,
+    # which predicts a higher `cant_tell` share in the browser column. If that difference is
+    # large, the calibration set is partly a measurement of how each surface asks — and reading
+    # the pooled figure alone would never show it.
+    by_surface = {}
+    for o in out:
+        b = by_surface.setdefault(o["surface"], {v: 0 for v in ADJUDICATION_VERDICTS})
+        b[o["verdict"]] = b.get(o["verdict"], 0) + 1
+    return {"n": len(out), "counts": counts, "by_surface": by_surface, "adjudications": out}
 
 
 def _populated_names(payload: dict) -> list:

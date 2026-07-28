@@ -37,7 +37,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 os.environ.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
 
 import review_ui as UI  # noqa: E402
-from lit2db.output import record_candidate  # noqa: E402
+from lit2db_mcp import server as S  # noqa: E402
+from lit2db.output import (adjudications, record_adjudication,  # noqa: E402
+                           record_candidate, surface_of, tag_adjudicator)
 from lit2db.review import (ANCHOR_ABSENT, ANCHOR_EXACT, ANCHOR_MOVED,  # noqa: E402
                            ANCHOR_NO_STORE, ANCHOR_PAST_END, QUOTE_JOIN, anchor, load_store,
                            may_record, record_view, source_links)
@@ -464,6 +466,58 @@ def test_the_reviewer_is_given_a_way_to_the_real_paper(tmp_path):
     assert source_links({}, "DOI:10.1002/anie.201501119")[0]["url"] == \
         "https://doi.org/10.1002/anie.201501119"
     assert source_links({}, "") == [], "no identifier must yield no link, not a guess"
+
+
+def test_a_verdict_records_which_surface_it_was_given_on(tmp_path):
+    """Both review paths write the same table with the same three verdicts, and they do NOT apply
+    the same conditions: the browser refuses right/wrong when a record's quote could not be shown,
+    while `/lit2db-review` states that rule in prose for an agent to honour.
+
+    So the two can produce differently-distributed labels from one corpus — and with nothing
+    recording the path, that difference was unmeasurable rather than absent. Pooling them would
+    let a bar be calibrated partly against how each surface asks."""
+    db = str(tmp_path / "o.db")
+    sources, text = _store(tmp_path)
+    quote = "A second determination gave 4.4 uM."
+    _candidate(db, record_id="r1", quote=quote, offset=text.index(quote))
+    _candidate(db, record_id="r2", quote=quote, offset=text.index(quote))
+
+    with _serving(db, sources) as base:
+        _post(base, {"record_id": "r1", "source_id": "PMC1", "verdict": "right"})
+    S.record_adjudication("r2", "PMC1", "cant_tell", db_path=db)   # the MCP surface
+
+    rows = {a["record_id"]: a for a in adjudications(db)["adjudications"]}
+    assert rows["r1"]["surface"] == "browser"
+    assert rows["r2"]["surface"] == "chat"
+    assert adjudications(db)["by_surface"] == {
+        "browser": {"right": 1, "wrong": 0, "cant_tell": 0},
+        "chat": {"right": 0, "wrong": 0, "cant_tell": 1}}
+
+
+def test_the_surface_tag_survives_a_named_adjudicator_and_never_doubles(tmp_path):
+    """`--adjudicator alice` must still record the path: which surface a verdict came from is a
+    property of the path, not a setting someone remembers to pass.
+
+    And tagging must be idempotent — both callers go through a wrapper that tags, so a
+    double-tagged value would split into its own bucket and silently halve a comparison."""
+    assert tag_adjudicator("alice", "browser") == "alice (browser)"
+    assert tag_adjudicator("alice (browser)", "browser") == "alice (browser)"
+    assert tag_adjudicator("", "chat") == "researcher (chat)"
+    assert surface_of("alice (browser)") == "browser"
+    assert surface_of("researcher") == "unknown", (
+        "rows written before this must read as unknown, not be assigned a path they never had")
+
+
+def test_verdicts_recorded_before_the_surface_was_tracked_still_read(tmp_path):
+    """The tag rides on `adjudicator` rather than a new column precisely so existing calibration
+    data survives. A schema change would have stranded every row already collected."""
+    db = str(tmp_path / "o.db")
+    _candidate(db, record_id="old", quote="q", offset=0)
+    record_adjudication("old", "PMC1", "right", db, adjudicator="researcher")
+
+    rep = adjudications(db)
+    assert rep["adjudications"][0]["surface"] == "unknown"
+    assert rep["counts"]["right"] == 1, "an untagged row must still count in the pooled figure"
 
 
 def test_everything_the_page_renders_from_a_record_is_escaped():
