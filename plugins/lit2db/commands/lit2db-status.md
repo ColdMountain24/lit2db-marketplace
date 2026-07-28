@@ -34,3 +34,16 @@ and a status report that shows only the accepted tier hides the acceleration.**
 Say plainly which reasons dominate the queue. "Forty records short of unanimous agreement" and
 "forty records contradicted by their own source" are opposite findings and should never look
 alike.
+
+## Report the corpus too — it is the floor, and it is never empty
+
+Both tiers above are about records. **A third number belongs beside them: how many papers were
+searched, screened and read.** State it first, because it is the one deliverable that exists no
+matter how the extraction went:
+
+> *searched 1,161 · screened to 288 · readable 288 · read 55*
+
+A researcher whose ML-ready tier is thin still has a defensible reading list and a pool of
+pre-quoted candidates — weeks of work already done. A status report that opens with "5 records"
+tells them the tool failed. One that opens with the corpus, then the candidates, then the
+confirmed rows, tells them what actually happened. **Report all three, in that order, always.**

@@ -69,9 +69,10 @@ Restart the session if prompted so the MCP server and hooks load.
 /help
 ```
 
-You should see the four lit2db commands listed:
+You should see the five lit2db commands listed:
 
-- `/lit2db-new-project` — run the Stage-0.5 scope-elicitation interview
+- `/lit2db-start` — **start here**: one guided intake, then it builds your database
+- `/lit2db-new-project` — the long-form Stage-0.5 scope-elicitation interview
 - `/lit2db-extract` — one source end-to-end: store → k passes → merge → verify → route → gate
 - `/lit2db-verify` — run the verify/route/gate spine over records
 - `/lit2db-status` — selfcheck the loaded plugin, then report the ML-ready view

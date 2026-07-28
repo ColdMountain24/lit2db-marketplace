@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.43.0 — 2026-07-28
+`/lit2db-start` — a front door for a researcher who knows their field and nothing about this tool.
+
+`/lit2db-new-project` runs the ten-axis Stage-0.5 interview, which asks a chemist about
+"provenance granularity" and "evidence-tier dimensions". That is the right depth for freezing a
+spec and the wrong first contact for someone who just wants their literature in a table.
+
+- **Four batched questions, in the researcher's language**: what is one row, what do you want to
+  know about each, which literature counts, what would make you throw a paper out. Everything
+  else — the query, identity chain, negative-data policy, provenance granularity — is STRUCTURE,
+  derived and stated in a plain sentence for correction. A researcher is never asked to write a
+  query string; they are shown what it returned and asked whether that looks like their field.
+- **The corpus is measured and shown before anything is spent**, and `preflight` runs before the
+  first model call (D-095) so a configuration problem is a question, not a dead run.
+- **The honest floor, stated worst-case first** (D-096): a screened paper list, then a candidate
+  pool where every value already carries its quote and location, then the ML-ready table — which
+  will be small at first, and that is said out loud rather than apologised for. `/lit2db-status`
+  now reports the corpus alongside both record tiers for the same reason: a report opening with
+  "5 records" reads as failure, and one opening with the corpus reads as what happened.
+
 ## 0.42.0 — 2026-07-28
 A configuration refusal costs a question, not a night.
 
