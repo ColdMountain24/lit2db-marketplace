@@ -1,7 +1,7 @@
 ---
 name: ingest-agent
 description: Stage 1 ingest via the two source adapters. Discovery, legal access resolution, parse, retraction check, manual-acquisition queue. No DB write.
-tools: [WebFetch, Bash, Read, Write, Glob, Grep, mcp__lit2db__screen_corpus, mcp__lit2db__dedupe_corpus]
+tools: [WebFetch, Bash, Read, Write, Glob, Grep, mcp__plugin_lit2db_lit2db__screen_corpus, mcp__plugin_lit2db_lit2db__dedupe_corpus]
 model: sonnet
 ---
 You run Stage 1 through the adapter contract (blueprint 3). You never write to the DB.

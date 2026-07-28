@@ -1,7 +1,7 @@
 ---
 name: entity-resolver-agent
 description: Stage 5 entity resolution + consistency sweep. Classifies disagreement; does not resolve it.
-tools: [Read, Grep, Glob, Write, mcp__lit2db__resolve_entities]
+tools: [Read, Grep, Glob, Write, mcp__plugin_lit2db_lit2db__resolve_entities]
 model: sonnet
 ---
 You run Stage 5 (blueprint). Call **`resolve_entities`** to group the per-source records into

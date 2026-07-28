@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.35.0 — 2026-07-28
+Structures are resolved, never generated.
+
+Built for the compound-side database (D-084). The extractor pulls a compound NAME — in the text,
+quotable, grounded like any other string — and `resolve_structure` asks a public authority what
+that name is. **A model that never writes a SMILES cannot hallucinate one**, so the hazard is
+removed rather than checked for afterwards. It is also, independently, how the collaborator built
+his own 1,062-compound database.
+
+- `lit2db.structures` — `resolve_structure` (PubChem, network injected, fails closed) and
+  `structure_fields`, which attaches the result as `StructuredProvenance`. The compound name
+  carries the literature provenance; the structure carries the lookup. Two auditable links.
+- **Ambiguity resolves to nothing.** A name matching several compounds returns no structure and
+  reports the candidates: names lose stereochemistry, and for terpenoids that is exactly the
+  difference that matters.
+- **No formula fallback.** Measured on the collaborator's data: 642 distinct formulas over 1,058
+  compounds, and 44 share C15H24. A formula agreement is close to no evidence in this domain.
+- **An unresolved name costs the record nothing** (D-083) — attempting a resolution must never be
+  worse than skipping it, or the extractor is incentivised never to try. A name matching nothing
+  is very likely a NOVEL compound, which is a finding.
+- **PubChem only.** The Natural Products Atlas is the better domain source but no client for it
+  has ever been run against the live API, and shipping a resolver for an endpoint shape nobody
+  verified is the defect `test_declarations.py` exists to prevent. Added after one live session.
+- The extractor agent now carries the rule explicitly: never emit a SMILES, and never read a
+  structure off a figure.
+
+**Two defects found while wiring it, both by the audit:** the agent frontmatter used
+`mcp__lit2db__*`, which is not the namespace this plugin's tools actually carry — an unknown tool
+name is silently dropped, which is the documented hazard. And `test_agent_contracts` compared
+namespaced declarations against bare prose names, so it had been passing on a declaration it
+should have caught; it now normalises with the same rule the PreToolUse hook uses.
+
+540 → 549 tests. 19 MCP tools.
+
 ## 0.34.0 — 2026-07-27
 Two tiers, and fields are optional unless you lock them.
 

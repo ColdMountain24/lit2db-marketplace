@@ -53,10 +53,18 @@ def split(path: pathlib.Path) -> tuple[str, str]:
 
 
 def declared_tools(frontmatter: str) -> set[str]:
+    """Declared tools, NORMALISED to bare names.
+
+    An MCP tool is declared namespaced (`mcp__plugin_lit2db_lit2db__resolve_structure`) and
+    referred to bare in prose (`resolve_structure`). Comparing the two literally made this check
+    pass on a declaration it should have caught, and it only passed because a `**` in the
+    sentence happened to split the clause before the matcher saw it. Compare identity, using the
+    same last-segment rule the PreToolUse hook applies (`lit2db.gate.tool_basename`).
+    """
     m = re.search(r"^tools:\s*\[(.*?)\]", frontmatter, re.MULTILINE)
     if not m:
         return set()
-    return {t.strip() for t in m.group(1).split(",") if t.strip()}
+    return {t.strip().rsplit("__", 1)[-1] for t in m.group(1).split(",") if t.strip()}
 
 
 def clauses(body: str) -> list[str]:

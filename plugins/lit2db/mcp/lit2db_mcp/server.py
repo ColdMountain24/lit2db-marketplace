@@ -65,6 +65,7 @@ from lit2db.grounding import (ground_literature as _ground,  # noqa: E402
 from lit2db.output import (query as _query, record_candidate as _record_candidate,  # noqa: E402
                            review_queue as _review_queue, upsert as _upsert)
 from lit2db.scoring import score_and_route as _score_and_route  # noqa: E402
+from lit2db.structures import resolve_structure as _resolve_structure  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
@@ -539,6 +540,24 @@ def review_queue(db_path: str = "", source_id: str = "", limit: int = 100) -> di
     into rows, and a worst-first queue spends it on the records least likely to survive.
     """
     return _review_queue(db_path or DB_PATH, source_id=source_id, limit=limit)
+
+
+@mcp.tool()
+def resolve_structure(name: str, timeout_s: float = 20.0) -> dict:
+    """Compound NAME -> a structure from a public authority (D-084). Fails closed.
+
+    The extractor must never write a SMILES. It extracts the name, which is in the text and
+    grounds like any other string; this turns that name into a structure. A model that never
+    writes a structure cannot hallucinate one.
+
+    A name matching several compounds resolves to NOTHING and reports the candidates — names
+    lose stereochemistry, and for terpenoids that is precisely the difference that matters.
+    A name matching none is very likely a NOVEL compound, which is a finding rather than an
+    error: record it with its figure/scheme location and route it to a human (D-067's lane).
+
+    Not every entry needs a structure. An unresolved name costs the record nothing.
+    """
+    return _resolve_structure(name, timeout_s=timeout_s)
 
 
 if __name__ == "__main__":
