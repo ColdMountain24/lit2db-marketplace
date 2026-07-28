@@ -183,6 +183,15 @@ def assemble(paper: str, cfg: dict, merged: dict, hunt: dict) -> tuple[list, lis
                 continue
             off = hits[0]["start"]
             cc = dict(f.get("confidence_components") or {})
+            # k=1 HAS NO AGREEMENT, and must not report one. `merge_passes` computes agreement
+            # over whatever passes it was given, so a single pass agrees with itself and emits
+            # c_ensemble=1.0 — a free full mark on the signal the accept bar leans on hardest.
+            # `required_agreement` already refuses k<2 for exactly this reason; that guard fires
+            # on the BAR while this is the SIGNAL, and stopping the exception without dropping
+            # the value left the flattery in place. Removing the key routes the field on the
+            # signals actually measured, which is what "leave c_ensemble unset" meant.
+            if len(merged.get("_passes") or []) < 2:
+                cc.pop("c_ensemble", None)
             if name in cfg.get("evidence_grounded_fields", []):
                 # D-061: a controlled-vocabulary value is never verbatim in a paper — no source
                 # contains the string "biochemically_characterized". Grounding it lexically

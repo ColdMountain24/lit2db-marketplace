@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.45.0 — 2026-07-28
+k=1 no longer awards itself a free agreement score.
+
+v0.42.0 made k=1 runnable by passing `ensemble_k=0`, which stopped `required_agreement` raising.
+It did not stop the thing the exception was warning about: `merge_passes` computes agreement over
+whatever passes it is given, so a single pass agrees with ITSELF and still emitted
+**`c_ensemble = 1.0`** — a full mark on the signal the accept bar leans on hardest, awarded for
+nothing.
+
+- `assemble` now drops `c_ensemble` entirely when there are fewer than two passes, so a field is
+  routed on the signals actually measured. That is what the contract's "leave c_ensemble unset"
+  always meant.
+- The guard and the value are **different objects**: `required_agreement` refuses k<2 on the
+  BAR, and this is the SIGNAL. Silencing the first without removing the second left the flattery
+  in place while looking fixed — and it was found only by reading a written record's components,
+  not by any test.
+
 ## 0.44.0 — 2026-07-28
 `/lit2db-start` hands off to the full interview instead of running on four answers.
 
