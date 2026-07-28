@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.40.0 — 2026-07-28
+The fuse counts what the cost report counts.
+
+The validation arm stopped at 55 of 288 papers because the fuse tripped at 24.4M tokens. It was
+summing **every stream, `cache_read` included** — and that was **82% of the total**. The actual
+first-time content was 4.4M. A brake denominated differently from the cost headline is one nobody
+can size: it stopped a healthy run and read as a five-fold overrun.
+
+- `max_tokens_total` now counts `input + cache_write + output` — the same figure D-070 made the
+  cost headline (D-093). Re-reads are counted and reported as `tokens_all_streams`, never enforced.
+- **The safety property survives**: a runaway loop generates `output` on every iteration, so it
+  still trips, and `max_calls` remains the primary loop brake. Both pinned by test.
+- A regression test replays the arm's measured per-call shape and asserts the old rule would have
+  tripped where the new one does not.
+- 599 → 605 tests.
+
 ## 0.39.0 — 2026-07-28
 The record-level review lane had never once worked.
 

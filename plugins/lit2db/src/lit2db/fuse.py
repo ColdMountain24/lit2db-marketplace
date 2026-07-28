@@ -116,7 +116,8 @@ class Fuse:
             _env_int("LIT2DB_FUSE_MAX_TOKENS_TOTAL", DEFAULT_MAX_TOKENS_TOTAL)
         self.label = label
         self.calls = 0
-        self.tokens_total = 0
+        self.tokens_total = 0          # first-time content — what the ceiling counts
+        self.tokens_all_streams = 0    # incl. cache_read, reported never enforced
         # Optional RunAccount: the fuse stops, accounting explains. Keeping them separate
         # means a run can be measured without being bounded, and bounded without being
         # re-instrumented.
@@ -141,7 +142,15 @@ class Fuse:
         """
         norm = _norm(usage)
         self.calls += 1
-        self.tokens_total += sum(norm[s] for s in STREAMS)
+        # THE CEILING COUNTS FIRST-TIME CONTENT (D-093), the same figure D-070 made the cost
+        # headline: `input + cache_write + output`. It used to sum every stream, `cache_read`
+        # included — and on a real 55-paper run that was 82% of the total, so the fuse tripped
+        # at 24.4M while the work itself was 4.4M. A brake denominated differently from the
+        # cost report is one nobody can size: it stopped a healthy run and read as an overrun.
+        # `max_calls` remains the primary runaway-loop brake, and a genuine loop still trips
+        # this one, because a loop generates `output` on every iteration.
+        self.tokens_total += norm["input"] + norm["cache_write"] + norm["output"]
+        self.tokens_all_streams += sum(norm[s] for s in STREAMS)
         if self.account is not None:
             self.account.record(usage, unit=unit, stage=stage)
         if self.tokens_total > self.max_tokens_total:
@@ -184,6 +193,7 @@ class Fuse:
             "max_tokens_per_call": self.max_tokens_per_call,
             "calls_remaining": max(0, self.max_calls - self.calls),
             "tokens_remaining": max(0, self.max_tokens_total - self.tokens_total),
+            "tokens_all_streams": self.tokens_all_streams,
         }
 
     def _trip(self, which: str, limit: int, observed: int):
