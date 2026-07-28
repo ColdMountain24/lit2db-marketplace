@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.37.0 — 2026-07-28
+A compound named as one of a series is named by the sentence that names the series.
+
+From the compound pilot, which wrote **0 records out of 13** while extracting correctly. Five of
+the six right answers died on one rule: the paper writes *"we propose the trivial names corvol
+ether**s** A and B"* and the record says `corvol ether A`, so the singular never appears and the
+lexical check scored **0.0**. `compound_name` grounded at **62%** while every other field
+grounded at **100%** — and it is the identity anchor and the string the structure resolver
+consumes, so the one field the schema cannot work without was the one the check could not verify.
+
+- `_ground_series` — a value shaped `STEM DESIGNATOR` grounds when the quote contains that stem,
+  optionally pluralised, followed by an enumeration including the designator: a list
+  (`A and B`), a range (`A-C`, which names B without printing it), or a mix. New modes
+  `series_match` / `series_range_match`, so which rule fired is auditable on the record.
+- **Domain-BLIND by construction.** The rule is structural — `mutant 3` grounds against
+  `mutants 1-5` by the same code. Nothing in it knows what a compound is.
+- **Conservative on purpose, because it LOOSENS a check the database depends on**: the stem must
+  match on a word boundary and be non-trivial, the enumeration is read only from text
+  immediately following the stem, and a range expands only if genuinely ascending. `C-A` is not
+  a range; `sulfadixiamycin D` is still absent from `sulfadixiamycins A-C`.
+- **A second, older defect found by a test written for the first.** `_ground_scalar` took the
+  numeric path for any value merely CONTAINING a digit, so `hapalindole 7` grounded against
+  "isolated after 7 days of culture" — a false positive in the write path, live long before this
+  release. A measurement LEADS with its number; a name that contains one does not.
+  `12.4 s-1` still grounds numerically, `compound 3` now grounds as a string.
+- Replayed over the pilot with **no model calls**: the five records stuck at composite 0.30 now
+  clear the score bar, and one writes outright. The rest are held by judge verdicts the original
+  run never produced, because they were never selected in it — replay cannot invent a verdict.
+- 564 → 587 tests.
+
 ## 0.36.0 — 2026-07-28
 An abstract is a document you read all of, not a paper you read part of.
 
