@@ -152,7 +152,13 @@ def replay_one(pdir: pathlib.Path, cfg: dict, db: str | None = None) -> dict:
                     tempfile.TemporaryDirectory())) / "replay.db")
             for rec in records:
                 sr = score_and_route(record=rec, weights_key=cfg["weights_key"],
-                                         ensemble_k=len(cfg["models"]),
+                                         # Same rule as the driver: k=1 has no agreement to
+                                         # score, so pass 0 rather than 1 (D-095). Fixing this
+                                         # in run_wave.py and not here is why the first k=1
+                                         # replay failed on all 46 papers -- one class, two
+                                         # callers, and only one of them patched.
+                                         ensemble_k=(len(cfg["models"])
+                                                     if len(cfg["models"]) > 1 else 0),
                                          ensemble_min_agreeing=0,
                                          review_lane=cfg["review_lane"])
                 comp = sr.get("_composite_confidence") or 0.0
