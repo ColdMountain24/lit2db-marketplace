@@ -248,7 +248,8 @@ def _product(*pools):
 
 
 # --- Starting routing rules (blueprint 6, "Resolved here"). Calibrate on the gold set.
-def default_route(fv: FieldValue, min_agreement: float = 1.0) -> RouteDecision:
+def default_route(fv: FieldValue, min_agreement: float = 1.0,
+                  require_ensemble: bool = True) -> RouteDecision:
     """Reference routing logic. Deliberately simple and overridable per project.
 
     `min_agreement` is the ensemble bar, normally derived from the instantiation's ratified
@@ -275,6 +276,22 @@ def default_route(fv: FieldValue, min_agreement: float = 1.0) -> RouteDecision:
         return RouteDecision.human_review
     grounded = c.c_grounded if c.c_grounded is not None else 0.0
     ensemble = c.c_ensemble if c.c_ensemble is not None else 0.0
+
+    # SINGLE-PASS ROUTING (D-100 / V-001). With one reading there is no agreement to require,
+    # and demanding it anyway routed EVERY field to human_review — measured, k=1 wrote zero
+    # records across 21 gate settings. This does not make k=1 laxer for free: `require_ensemble`
+    # is False only when the operator declared a single-pass run, and `gate.single_pass_problems`
+    # REFUSES that configuration unless a completeness minimum is set to take agreement's place.
+    # The substitution is structural, not a flag that skips a condition.
+    #
+    # Measured before it was believed: same 55 papers, same prompt, same conditions, k=1 opus
+    # reached 39% precision / 14.7% recall against k=3 mixed's 33% / 13.3%, at a third the cost.
+    if not require_ensemble:
+        if grounded >= 0.9:
+            return RouteDecision.auto_accept
+        return (RouteDecision.cheap_repair if grounded >= 0.6
+                else RouteDecision.human_review)
+
     if ensemble >= min_agreement - _EPS and grounded >= 0.9:
         return RouteDecision.auto_accept
     if (0.6 <= grounded < 0.9) or (0.0 < ensemble < min_agreement - _EPS):

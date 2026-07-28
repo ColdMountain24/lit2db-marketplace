@@ -47,6 +47,12 @@ def score_and_route(record: dict, weights_key: str = "numeric",
     # tightens the bar instead of silently loosening it to a majority.
     min_agreement = (required_agreement(ensemble_k, ensemble_min_agreeing or None)
                      if ensemble_k else 1.0)
+    # `ensemble_k=0` is the contract's own way of saying "single pass, no agreement measured"
+    # (D-095). Routing must then decide without it — otherwise every field routes to
+    # human_review and a k=1 run writes nothing, which is exactly what was measured. What keeps
+    # this honest is `gate.single_pass_problems`, which refuses a single-pass configuration that
+    # has not set a completeness minimum in agreement's place.
+    require_ensemble = bool(ensemble_k)
     lane = set(review_lane or ())
     field_confs = []
     for fv in rec.fields:
@@ -56,7 +62,7 @@ def score_and_route(record: dict, weights_key: str = "numeric",
                 fv.confidence = c.composite(weights)
             except ValueError:
                 fv.confidence = None
-        fv.route = default_route(fv, min_agreement)
+        fv.route = default_route(fv, min_agreement, require_ensemble)
         # A ratified review-lane field is scored and routed like any other — its confidence
         # stays visible — but it is EXCLUDED from the record composite, because the composite is
         # the weakest link among the fields the record will actually be written with. A field

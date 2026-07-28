@@ -43,6 +43,7 @@ from lit2db.ensemble import merge_passes                       # noqa: E402
 # copy would drift and validate nothing. Until v0.33.0 this imported `run_wave` (a driver) and
 # loaded the MCP server file as a module to reach scoring and gating; both are library calls now.
 from lit2db.pipeline import VERDICT_TO_STATE, assemble          # noqa: E402
+from lit2db.gate import single_pass_problems                    # noqa: E402
 from lit2db.output import upsert                                # noqa: E402
 from lit2db.scoring import score_and_route                      # noqa: E402
 
@@ -201,6 +202,13 @@ def main() -> int:
     cfg = dict(DEFAULTS)
     if a.config:
         cfg.update(json.loads(pathlib.Path(a.config).read_text()))
+
+    # Same coupling check the driver runs. `replay.py` is the instrument this project reaches
+    # for FIRST, so a configuration it silently tolerates is one that gets trusted.
+    bad = single_pass_problems(len(cfg["models"]) if len(cfg["models"]) > 1 else 0,
+                               cfg.get("min_populated_fields", 0))
+    for problem in bad:
+        print(f"CONFIG: {problem}\n")
 
     runs = find_runs(pathlib.Path(a.runs).resolve())
     print(f"replaying {len(runs)} saved paper-runs — no model calls\n")

@@ -61,6 +61,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from lit2db.accounting import STREAMS, RunAccount             # noqa: E402
 from lit2db.ensemble import merge_passes                      # noqa: E402
 from lit2db.fuse import Fuse, FuseExceeded                    # noqa: E402
+from lit2db.gate import single_pass_problems                   # noqa: E402
 from lit2db.output import record_candidate, upsert
 from lit2db.structures import resolve_structure, structure_fields            # noqa: E402
 from lit2db.scoring import score_and_route                    # noqa: E402
@@ -658,6 +659,13 @@ def preflight(cfg: dict, papers: list) -> list[str]:
             required_agreement(len(models), cfg.get("ensemble_min_agreeing") or None)
         except ValueError as exc:
             problems.append(f"ensemble: {exc}")
+
+    # k=1 must have something standing in for cross-pass agreement (D-100 / V-001). Checked
+    # here so an operator who drops to one reading to save tokens is told BEFORE the run, not
+    # after a night of it: without a completeness minimum, k=1 has neither of the two signals
+    # the composite is built from.
+    problems += single_pass_problems(
+        len(models) if len(models) > 1 else 0, cfg.get("min_populated_fields", 0))
 
     wk = cfg.get("weights_key", "numeric")
     if wk not in DEFAULT_WEIGHTS:

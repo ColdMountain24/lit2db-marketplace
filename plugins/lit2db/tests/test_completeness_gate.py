@@ -186,3 +186,48 @@ def test_the_hook_applies_ALL_the_predicate_conditions_not_a_subset():
     decision = json.loads(out.stdout)["hookSpecificOutput"]["permissionDecision"]
     assert decision == "deny"
     assert gate_reasons(rec, 1.0, 0.5, required_fields=["c"])   # and the tool agrees
+
+
+# --- 5. single-pass runs: completeness stands in for agreement (D-100 / V-001) ----------
+def test_a_single_pass_run_without_a_completeness_bar_is_REFUSED():
+    """The coupling, enforced rather than documented. Dropping to one reading removes one of the
+    two signals the composite is built from; that is only safe because completeness takes its
+    place. Configured without it, k=1 has NEITHER — and it would arrive looking like a cost
+    saving rather than an ungated run."""
+    from lit2db.gate import single_pass_problems
+    problems = single_pass_problems(ensemble_k=0, min_populated_fields=0)
+    assert len(problems) == 1
+    assert "nothing is configured to take its place" in problems[0]
+
+
+def test_a_single_pass_run_WITH_a_completeness_bar_is_allowed():
+    from lit2db.gate import single_pass_problems
+    assert single_pass_problems(ensemble_k=0, min_populated_fields=5) == []
+
+
+def test_a_multi_pass_run_never_needs_the_completeness_bar():
+    """k>=2 has agreement, so the substitution does not apply and must not be demanded."""
+    from lit2db.gate import single_pass_problems
+    assert single_pass_problems(ensemble_k=3, min_populated_fields=0) == []
+
+
+def test_single_pass_routing_no_longer_sends_every_field_to_human_review():
+    """Measured before this change: k=1 wrote ZERO records across 21 gate settings, because
+    routing demanded an agreement signal that a single pass cannot produce. That is what made
+    'drop to k=1' impossible rather than merely cheaper."""
+    from lit2db.contracts import FieldValue, RouteDecision
+    from lit2db.contracts.routing import default_route
+    fv = FieldValue.model_validate(_field("a", "x") | {
+        "confidence_components": {"c_grounded": 1.0, "c_ensemble": None}})
+    assert default_route(fv, 1.0, require_ensemble=True) == RouteDecision.human_review
+    assert default_route(fv, 1.0, require_ensemble=False) == RouteDecision.auto_accept
+
+
+def test_single_pass_routing_still_requires_GROUNDING():
+    """The substitution replaces agreement, not evidence. A value that is not in the text must
+    still not auto-accept, or k=1 would be a free pass rather than a different configuration."""
+    from lit2db.contracts import FieldValue, RouteDecision
+    from lit2db.contracts.routing import default_route
+    ungrounded = FieldValue.model_validate(_field("a", "x") | {
+        "confidence_components": {"c_grounded": 0.0, "c_ensemble": None}})
+    assert default_route(ungrounded, 1.0, require_ensemble=False) == RouteDecision.human_review

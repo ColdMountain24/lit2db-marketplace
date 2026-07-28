@@ -151,6 +151,38 @@ def resolve_threshold(tool_input=None, env=None, default: float = DEFAULT_AUTOAC
     return default
 
 
+MIN_ENSEMBLE_K = 2   # mirrors contracts.routing; gate.py stays stdlib-only, so it is restated
+
+
+def single_pass_problems(ensemble_k: int, min_populated_fields: int) -> list:
+    """Refuse a single-pass run that has nothing standing in for cross-pass agreement.
+
+    THE COUPLING, ENFORCED RATHER THAN DOCUMENTED (D-100 / V-001). Dropping to one reading
+    removes the agreement signal, which is one of only two the composite is built from. That is
+    safe ONLY because record completeness takes its place — measured on the same 55 papers under
+    identical conditions, k=1 opus reached 39% precision at 14.7% recall against k=3 mixed's 33%
+    / 13.3%, at a third of the extraction cost.
+
+    Configure k=1 WITHOUT a completeness minimum and you get neither signal: every record would
+    ride on grounding alone, which this project has measured failing on correct records (D-061,
+    and `grounded=0.00` scoring 89% on one arm). That is not a cheaper configuration, it is an
+    ungated one — and it would arrive looking like a cost saving.
+
+    A configuration refusal, so it FLOATS rather than dying mid-run (D-095): returned as a list
+    for `preflight` to report with everything else, before the first model call.
+    """
+    if ensemble_k >= MIN_ENSEMBLE_K:
+        return []
+    if min_populated_fields > 0:
+        return []
+    return [f"single-pass run (ensemble_k={ensemble_k}) with min_populated_fields="
+            f"{min_populated_fields}: dropping to one reading removes cross-pass agreement, and "
+            f"nothing is configured to take its place. Set a calibrated "
+            f"`min_populated_fields`, or run k>={MIN_ENSEMBLE_K}. Grounding alone is not a "
+            f"second signal — it has been measured passing records that are wrong and failing "
+            f"records that are right."]
+
+
 def resolve_min_populated(tool_input=None, env=None,
                           default: int = DEFAULT_MIN_POPULATED_FIELDS) -> int:
     """The completeness condition, same precedence as the threshold: the call's own
