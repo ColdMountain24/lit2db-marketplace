@@ -232,3 +232,159 @@ def test_this_file_is_wired_into_the_suite():
     """A declaration audit that nobody runs is itself an unbacked declaration."""
     assert __file__.endswith("test_declarations.py")
     assert (ROOT / "tests" / "test_declarations.py").exists()
+
+
+# --- 8. a contract field nobody reads is a declaration too --------------------------------
+# `FieldSpec.required` defaulted to True, was inherited silently by six of eleven terpenoid
+# fields, and was read by NOTHING for the plugin's entire published life. `EvidenceTier` was
+# declared on every value and never populated. `is_inferential` outlived the rule it selected.
+# Each is the same defect wearing a Pydantic annotation, and none of the checks above would
+# have caught them — so this is the generalized form.
+#
+# A field may be declared and unread only if it is listed here WITH a reason. The list is the
+# point: an exception somebody had to write down is a different thing from one nobody noticed.
+# Three categories, each with a stated reason. Writing 29 exceptions down is not a weakening —
+# an exception somebody had to justify is a different object from one nobody noticed, and the
+# inventory is what makes the next one visible.
+#
+# 1. SPEC CONTENT. Researcher-authored substance consumed by extraction prompts and by humans
+#    reading the frozen spec, never branched on in Python. `research_question` is not supposed to
+#    drive an `if`; it is supposed to appear in a prompt and in a datasheet.
+SPEC_CONTENT = {
+    "SchemaReadySpec", "CorpusQuery", "SourceScope", "LedgerItem", "RatificationLedger",
+    "MLTask", "RatificationStatus",
+}
+# 2. STRUCTURED-ADAPTER FIELDS, unread because the structured INGEST path does not exist. This
+#    is a flagged gap, not a benign exemption — if that path is ever built these become live, and
+#    if it never is, these should go with it. Kept visible on purpose.
+STRUCTURED_PENDING = {"StructuredProvenance"}
+# 3. GENUINELY INERT behaviour flags — recorded, deliberately not acted on.
+RECORDED_NOT_ACTED_ON = {
+    "EvidenceTier": "a project may populate it from its own extraction prompt; the shipped "
+                    "pipeline does not, and its docstring says so",
+    "is_inferential": "a per-value label the judge prompt and the reviewer read; it stopped "
+                      "selecting a stricter judge bar when D-079 made the veto uniform",
+    "judge_note": "carried to the reviewer through the gate's reasons, not branched on",
+    "edit_note": "ledger bookkeeping, read by a human reviewing ratification history",
+    "definition": "the field's meaning, injected into the extraction prompt",
+    "provenance_granularity": "what distinguishes two records; read by the schema architect",
+    "source_status_checked_at": "recorded so a reader knows how stale the retraction check is",
+}
+
+
+def test_no_contract_field_is_declared_and_never_read():
+    """Every field on a BEHAVIOURAL contract is used, or listed as deliberately inert.
+
+    `FieldSpec.required` defaulted to True, was inherited silently by six of eleven terpenoid
+    fields, and was read by NOTHING for the plugin's entire published life — a flag that implied
+    enforcement and had none. That is the category this catches: a field whose existence implies
+    behaviour. Fields that are merely CONTENT are exempted by model above, with a reason.
+    """
+    import lit2db.contracts as C
+
+    text = _all_source_text()
+    unread = []
+    for model_name in dir(C):
+        model = getattr(C, model_name)
+        if not (isinstance(model, type) and hasattr(model, "model_fields")):
+            continue
+        if model_name in SPEC_CONTENT | STRUCTURED_PENDING | set(RECORDED_NOT_ACTED_ON):
+            continue
+        for fname in model.model_fields:
+            if fname in RECORDED_NOT_ACTED_ON:
+                continue
+            if re.search(rf'(\.{re.escape(fname)}\b|["\']{re.escape(fname)}["\']|\b{re.escape(fname)}\s*=)',
+                         text):
+                continue
+            unread.append(f"{model_name}.{fname}")
+    assert not unread, (
+        f"contract field(s) {sorted(set(unread))} imply behaviour and get none. Use them, delete "
+        f"them, or list them above with the reason they are inert.")
+
+
+def test_the_structured_exemption_names_a_gap_we_have_admitted():
+    """`StructuredProvenance` is exempt because the structured ingest path is unimplemented —
+    the same fact the README and manifest were corrected to state. If one is ever fixed without
+    the other, this is where the inconsistency surfaces."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "STRUCTURED_PENDING" not in readme
+    assert "not implemented" in readme.lower(), (
+        "the structured-ingest gap is exempted in the audit but no longer admitted in the README")
+
+
+# --- 9. the two tiers stay two tiers ------------------------------------------------------
+def test_the_candidate_pool_cannot_reach_the_ml_ready_view(tmp_path):
+    """The large database and the high-quality one are separate TABLES, not one table with a
+    status column — because a shipped BBB database was once found holding 18
+    rejected-but-present records, which is what a flag everyone must remember to filter buys you.
+    """
+    from lit2db.output import query, record_candidate, review_queue
+
+    db = str(tmp_path / "t.db")
+    prov = {"kind": "literature", "source_id": "S1", "producing_process": "p@1",
+            "retrieval_timestamp": "2026-07-19T00:00:00Z", "source_status": "active",
+            "verbatim_quote": "the value is v", "char_offset": 0}
+    rec = {"record_id": "ts1", "entity_type": "e", "judge_verdict": "unsupported",
+           "fields": [{"field_name": "f", "value": "v", "provenance": prov}]}
+    record_candidate(rec, 0.2, {"decision": "deny", "reasons": ["struck out"]}, db, "PMC1")
+
+    assert query(db)["n"] == 0, "a candidate must never appear in the ML-ready view"
+    q = review_queue(db)
+    assert q["candidates_total"] == 1 and q["ml_ready_total"] == 0
+    assert q["queue"][0]["reasons"] == ["struck out"], "the reviewer sees why it stopped"
+
+
+def test_record_candidate_is_not_a_gated_write_tool():
+    """It must not be in WRITE_TOOLS: the PreToolUse hook would otherwise deny writes to a pool
+    that is explicitly ungated, and the candidate half of the product would never fill."""
+    from lit2db.gate import is_write_tool
+
+    assert not is_write_tool("mcp__lit2db__record_candidate")
+    assert is_write_tool("mcp__lit2db__gate_upsert"), "the gated one still is"
+
+
+def test_candidates_are_keyed_by_source_because_ids_are_per_source(tmp_path):
+    """`ts6` exists in more than one paper. The ML-ready table refuses the collision loudly;
+    the candidate pool simply keys on the pair, since it makes no uniqueness claim."""
+    from lit2db.output import record_candidate, review_queue
+
+    db = str(tmp_path / "t.db")
+    rec = {"record_id": "ts6", "entity_type": "e", "judge_verdict": "not_run", "fields": []}
+    record_candidate(rec, 0.9, {"decision": "deny", "reasons": []}, db, "PMC1")
+    record_candidate(rec, 0.9, {"decision": "deny", "reasons": []}, db, "PMC2")
+    assert review_queue(db)["candidates_total"] == 2, "same id, different papers, both kept"
+
+
+# --- 10. optional by default --------------------------------------------------------------
+def test_a_field_is_optional_unless_the_researcher_locks_it():
+    """The product is a large candidate pool plus a smaller high-quality table. Completeness is
+    not the bar: a record stating four things it can evidence beats one asserting nine it cannot.
+    """
+    from lit2db.contracts.spec import FieldSpec
+
+    assert FieldSpec.model_fields["required"].default is False, (
+        "fields must be optional by default; required-ness is something a researcher ratifies")
+
+
+def test_absence_of_an_unlocked_field_costs_a_record_nothing():
+    from lit2db.gate import gate_reasons
+
+    rec = {"record_id": "r", "entity_type": "e", "judge_verdict": "supported",
+           "fields": [{"field_name": "present_one", "value": 1,
+                       "provenance": {"source_status": "active"},
+                       "route": "auto_accept", "contradiction_search": "clean"}]}
+    assert gate_reasons(rec, 1.0, 0.95, require_contradiction_search=True) == []
+
+
+def test_a_locked_field_that_is_absent_holds_the_record_back():
+    """The other half: when the researcher HAS locked a field, absence is a real denial —
+    and it comes with a reason, so the record is actionable in the queue rather than lost."""
+    from lit2db.gate import gate_reasons
+
+    rec = {"record_id": "r", "entity_type": "e", "judge_verdict": "supported",
+           "fields": [{"field_name": "present_one", "value": 1,
+                       "provenance": {"source_status": "active"},
+                       "route": "auto_accept", "contradiction_search": "clean"}]}
+    reasons = gate_reasons(rec, 1.0, 0.95, require_contradiction_search=True,
+                           required_fields=("accession",))
+    assert reasons == ["locked field 'accession' is absent"]

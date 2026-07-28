@@ -166,7 +166,8 @@ def judge_veto_reasons(record):
 
 
 def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
-                      require_contradiction_search: bool = False, review_lane=()):
+                      require_contradiction_search: bool = False, review_lane=(),
+                      required_fields=()):
     """Every reason this record fails SELECTION — the whole gate except the judge's veto.
 
     Split out of `gate_reasons` for one caller: the wave driver, which needs to know who
@@ -220,6 +221,15 @@ def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_
         reasons.append("record carries no fields")
         return reasons
 
+    # A LOCKED field must be present. Nothing is locked by default: fields are optional unless
+    # the researcher ratified otherwise, because the product is a large candidate pool plus a
+    # smaller high-quality table, and a record that evidences four things beats one that asserts
+    # nine it cannot. A record missing a locked field is held OUT of the ML-ready table; it still
+    # belongs in the candidate pool, with this reason attached.
+    present = {fv.get("field_name") for fv in fields if isinstance(fv, dict)}
+    for name in sorted(set(required_fields or ()) - present):
+        reasons.append(f"locked field '{name}' is absent")
+
     lane = set(review_lane or ())
     for i, fv in enumerate(fields):
         if not isinstance(fv, dict):
@@ -263,7 +273,8 @@ def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_
 
 
 def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
-                 require_contradiction_search: bool = False, review_lane=()):
+                 require_contradiction_search: bool = False, review_lane=(),
+                 required_fields=()):
     """Every reason this record must NOT be written. An empty list means the write passes.
 
     THE write predicate — the one both enforcement points call (`gate_upsert` and the PreToolUse
@@ -275,5 +286,5 @@ def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOA
     past.
     """
     return (selection_reasons(record, composite_confidence, autoaccept,
-                              require_contradiction_search, review_lane)
+                              require_contradiction_search, review_lane, required_fields)
             + judge_veto_reasons(record))

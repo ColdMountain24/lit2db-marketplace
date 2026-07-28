@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.34.0 — 2026-07-27
+Two tiers, and fields are optional unless you lock them.
+
+The product is a large candidate database plus a smaller high-quality one. The goal is to make
+the second as large as possible without demanding perfection: **the pipeline accelerates a
+researcher's work, it does not replace it.**
+
+- **Every record the pipeline produces is now kept**, in a `candidates` table carrying its score,
+  route, gate decision and reasons. A record that missed the bar still has its quote, character
+  offset, grounding score, cross-pass agreement and judge verdict attached — most of the work of
+  confirming it. A run reporting "5 of 45 written" did not fail 40 times; it produced 5 finished
+  rows and 40 a human can adjudicate in seconds each, and discarding those was throwing away the
+  bulk of the acceleration.
+- **Two TABLES, not one with a status column.** `records` is unchanged and as gated as ever —
+  "everything in it cleared the gate" stays literally true, and the PreToolUse hook still
+  protects it. Separation rather than a flag, on this project's own evidence: a shipped BBB
+  database was found holding 18 rejected-but-present records, which is what a status column
+  everyone must remember to filter buys you. `record_candidate` is deliberately not a
+  `WRITE_TOOL`, and `db_query` reads only `records`.
+- **`FieldSpec.required` defaults to False.** It defaulted to True, was read by nothing, and was
+  inherited silently by six of eleven terpenoid fields — required because nobody wrote a value
+  down, which is the opposite of ratification. It is now enforced, and only for fields a
+  researcher explicitly locked (`gate_reasons(required_fields=...)`, empty by default).
+- **`/lit2db-status` reports both tiers** and is told never to report the accepted one alone.
+- **The declaration audit generalizes.** A new check catches any contract field that *implies
+  behaviour and gets none* — the category `FieldSpec.required` belonged to. Fields that are
+  merely content are exempted by model with a stated reason, and the structured-adapter fields
+  are exempted as an admitted gap, cross-checked against the README so the two cannot drift.
+
+532 → 540 tests. ML-ready gate decisions verified unchanged on 257 real records.
+
 ## 0.33.0 — 2026-07-27
 The library was a specification and a script was the system. Now there is one artifact.
 

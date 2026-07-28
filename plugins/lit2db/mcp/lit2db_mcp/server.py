@@ -62,7 +62,8 @@ from lit2db.entity import build_index as _build_index, explain as _explain  # no
 from lit2db.screening import screen_corpus as _screen_corpus  # noqa: E402
 from lit2db.grounding import (ground_literature as _ground,  # noqa: E402
                               validate_mapping as _validate_mapping)
-from lit2db.output import query as _query, upsert as _upsert  # noqa: E402
+from lit2db.output import (query as _query, record_candidate as _record_candidate,  # noqa: E402
+                           review_queue as _review_queue, upsert as _upsert)
 from lit2db.scoring import score_and_route as _score_and_route  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
@@ -514,6 +515,30 @@ def dedupe_corpus(papers: list) -> dict:
     merge on title similarity alone.
     """
     return _dedupe(list(papers))
+
+
+@mcp.tool()
+def record_candidate(record: dict, composite_confidence: float, gate_result: dict,
+                     db_path: str = "", source_id: str = "") -> dict:
+    """Record a record in the CANDIDATE pool, whatever the gate decided.
+
+    The candidate pool is the large database; `records` is the smaller high-quality one that
+    cleared the gate. This tool cannot reach the second — different table, and `db_query` reads
+    only `records`. A near-miss kept with its evidence is a minute of a researcher's attention
+    away from being a row; discarded, it is a paper to read again.
+    """
+    return _record_candidate(record, composite_confidence, gate_result,
+                             db_path or DB_PATH, source_id)
+
+
+@mcp.tool()
+def review_queue(db_path: str = "", source_id: str = "", limit: int = 100) -> dict:
+    """What a human would confirm next, best-first, with the reason each record stopped short.
+
+    Best-first because the point is acceleration: the near-misses are where attention converts
+    into rows, and a worst-first queue spends it on the records least likely to survive.
+    """
+    return _review_queue(db_path or DB_PATH, source_id=source_id, limit=limit)
 
 
 if __name__ == "__main__":

@@ -76,7 +76,7 @@ You should see the four lit2db commands listed:
 - `/lit2db-verify` — run the verify/route/gate spine over records
 - `/lit2db-status` — selfcheck the loaded plugin, then report the ML-ready view
 
-**Then confirm you got all 16 MCP tools**, not a stale subset:
+**Then confirm you got all 18 MCP tools**, not a stale subset:
 
 ```
 /lit2db-status

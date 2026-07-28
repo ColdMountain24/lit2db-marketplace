@@ -61,7 +61,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from lit2db.accounting import STREAMS, RunAccount             # noqa: E402
 from lit2db.ensemble import merge_passes                      # noqa: E402
 from lit2db.fuse import Fuse, FuseExceeded                    # noqa: E402
-from lit2db.output import upsert                              # noqa: E402
+from lit2db.output import record_candidate, upsert            # noqa: E402
 from lit2db.scoring import score_and_route                    # noqa: E402
 # THE PIPELINE ITSELF NOW LIVES IN THE LIBRARY. It used to live here, and scoring/gating were
 # reached by loading the MCP server file as a module — so the code that ran and the code that
@@ -485,6 +485,13 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                 record=s["record"], composite_confidence=s["composite"],
                 db_path=cfg["db_path"], autoaccept=cfg["auto_accept_threshold"],
                 require_contradiction_search=True, review_lane=cfg.get("review_lane", []))
+            # EVERY record enters the candidate pool, whatever the gate said. A record that
+            # missed the bar still carries its quote, offset, grounding score, agreement
+            # fraction and judge verdict — which is most of the work of confirming it by hand.
+            # Throwing those away was discarding the bulk of what this pipeline is FOR: it
+            # accelerates curation, it does not replace it.
+            record_candidate(s["record"], s["composite"], s["gate"],
+                             db_path=cfg["db_path"], source_id=paper)
         written += bool(s["gate"].get("written"))
 
     # What the judge was and was not asked, recorded rather than left to be inferred. A wave that

@@ -17,7 +17,23 @@ from .gate import DEFAULT_AUTOACCEPT, gate_reasons
 
 
 def connect(db_path: str) -> sqlite3.Connection:
-    """The output store. `record_id` is the primary key — see `upsert` for what that costs."""
+    """The output store: TWO tables, deliberately not one with a status column.
+
+    `records` is the ML-ready table. Everything in it cleared the gate — that sentence is
+    literally true, which is what makes the database worth trusting and what the PreToolUse hook
+    protects.
+
+    `candidates` is everything the pipeline produced, gated or not, with its score, route,
+    decision and reasons. It is the large database: the pipeline is meant to ACCELERATE curation,
+    not replace it, and a record that missed the bar still arrives with its quote, character
+    offset, grounding score, agreement fraction and judge verdict attached — which is most of the
+    work of confirming it. Discarding those was throwing away the majority of the acceleration.
+
+    **Two tables rather than one flagged table, on this project's own evidence.** A shipped BBB
+    database was found holding 18 rejected-but-present records, because a single table with a
+    status column relies on every future reader remembering to filter. Separation cannot be
+    forgotten: `db_query` reads `records` and nothing else.
+    """
     con = sqlite3.connect(db_path)
     con.execute("""CREATE TABLE IF NOT EXISTS records(
         record_id TEXT PRIMARY KEY,
@@ -27,6 +43,17 @@ def connect(db_path: str) -> sqlite3.Connection:
         source_status TEXT,
         payload_json TEXT,
         written_at TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS candidates(
+        record_id TEXT,
+        source_id TEXT,
+        entity_type TEXT,
+        composite_confidence REAL,
+        decision TEXT,
+        reasons_json TEXT,
+        judge_verdict TEXT,
+        payload_json TEXT,
+        recorded_at TEXT,
+        PRIMARY KEY (record_id, source_id))""")
     return con
 
 
@@ -113,3 +140,66 @@ def query(db_path: str, entity_type: str = "", limit: int = 100) -> dict:
     return {"n": len(rows),
             "records": [{"record_id": r[0], "entity_type": r[1], "composite_confidence": r[2],
                          "source_status": r[3], "written_at": r[4]} for r in rows]}
+
+
+def record_candidate(record: dict, composite_confidence: float, gate_result: dict,
+                     db_path: str, source_id: str = "") -> dict:
+    """Record a record in the CANDIDATE pool, whatever the gate decided about it.
+
+    Not a gated write and deliberately not named like one: `lit2db.gate.WRITE_TOOLS` does not
+    list it, so the PreToolUse hook leaves it alone. It cannot be used to reach the ML-ready
+    table — that is a different table, and `query` reads only `records`.
+
+    `source_id` qualifies the id because record ids are per-source ordinals: `ts6` exists in more
+    than one paper, so the candidate pool keys on the pair. The ML-ready table's collision refusal
+    stays as it is — that one is a real hazard and must stay loud.
+    """
+    payload = json.dumps(record, sort_keys=True, default=str)
+    con = connect(db_path)
+    try:
+        con.execute("INSERT OR REPLACE INTO candidates VALUES (?,?,?,?,?,?,?,?,?)",
+                    (str(record.get("record_id", "")), str(source_id),
+                     str(record.get("entity_type", "")), composite_confidence,
+                     str((gate_result or {}).get("decision", "unknown")),
+                     json.dumps((gate_result or {}).get("reasons") or []),
+                     str(record.get("judge_verdict", "not_run")), payload,
+                     datetime.now(timezone.utc).isoformat()))
+        con.commit()
+    finally:
+        con.close()
+    return {"recorded": True, "record_id": record.get("record_id"), "source_id": source_id}
+
+
+def review_queue(db_path: str, source_id: str = "", limit: int = 100,
+                 order: str = "best_first") -> dict:
+    """The candidate pool — what a human would confirm, best-first.
+
+    Best-first because the point is acceleration: the near-misses are where a minute of a
+    researcher's attention converts into a row, and a queue sorted worst-first spends that
+    attention on the records least likely to survive it.
+
+    Returns the denial reasons alongside each row, so a reviewer sees WHY it stopped short
+    without opening a run artifact.
+    """
+    con = connect(db_path)
+    try:
+        sql = ("SELECT record_id, source_id, entity_type, composite_confidence, decision, "
+               "reasons_json, judge_verdict FROM candidates WHERE decision != 'allow'")
+        args: list = []
+        if source_id:
+            sql += " AND source_id = ?"
+            args.append(source_id)
+        sql += (" ORDER BY composite_confidence DESC" if order == "best_first"
+                else " ORDER BY composite_confidence ASC")
+        sql += " LIMIT ?"
+        args.append(limit)
+        rows = con.execute(sql, args).fetchall()
+        total = con.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+        accepted = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+    finally:
+        con.close()
+    return {"n": len(rows), "candidates_total": total, "ml_ready_total": accepted,
+            "queue": [{"record_id": r[0], "source_id": r[1], "entity_type": r[2],
+                       "composite_confidence": r[3], "decision": r[4],
+                       "reasons": json.loads(r[5] or "[]"), "judge_verdict": r[6]}
+                      for r in rows]}

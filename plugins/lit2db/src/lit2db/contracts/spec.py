@@ -84,13 +84,22 @@ class FieldSpec(BaseModel):
     # is excluded from the auto-accept condition rather than counted as a failure — otherwise
     # every record carrying one is blocked and the yield reads as a broken pipeline.
     auto_acceptable: bool = True
-    # Whether the field must be PRESENT for a record to auto-accept. An optional field that is
-    # legitimately absent must not block: `accession` is null whenever a paper states no database
-    # identifier, which is common and expected, and the ratified identity rule already falls back
-    # to (source_organism + enzyme_name) for exactly that case. Found by running the pipeline on a
-    # real paper — a record was blocked by the ABSENCE of a field the spec calls optional.
+    # Whether the field must be PRESENT for a record to reach the ML-ready table.
+    #
+    # **DEFAULTS TO FALSE: optional unless the researcher LOCKS it.** The default was True, was
+    # read by nothing, and was inherited silently by six of eleven fields in the terpenoid spec —
+    # so those fields were "required" because nobody wrote a value down, which is the opposite of
+    # ratification. The product is a large candidate database plus a smaller high-quality one, and
+    # completeness is not the bar: a record that states four things it can evidence is worth more
+    # than one that states nine and cannot. Absence of an unlocked field costs a record nothing.
+    #
+    # It is now ENFORCED, and only for fields a researcher explicitly locked: `gate_reasons`
+    # takes `required_fields`, and a record missing one is held out of the ML-ready table (it
+    # still lands in the candidate pool with its reason attached). Default empty = nothing
+    # required, which is the shipped behaviour.
+    #
     # An optional field that IS present still has to clear the bar like any other.
-    required: bool = True
+    required: bool = False
 
     def shape_issues(self, value) -> list:
         """Does an extracted value LOOK like the type this field was ratified as?
