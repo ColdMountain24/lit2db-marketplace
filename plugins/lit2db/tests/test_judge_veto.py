@@ -351,6 +351,36 @@ def test_the_audit_frame_excludes_what_no_verdict_could_overturn():
     assert pick["denial_class"]["unsearched"] == "process"
 
 
+def test_a_colliding_record_id_is_counted_once_and_reported():
+    """FOUND ON THE FIRST LIVE RUN, not by this suite.
+
+    `merge_passes` returned 15 records under 11 ids on PMC10325987 — the fallback1 and ordinal
+    identity tiers colliding. Sampling over the raw list drew the same id twice, `to_judge`
+    deduplicated it, and the paper REPORTED a 3-record audit slice having judged 2. A run that
+    overstates its own sample size is the exact defect class this pipeline exists to catch, and
+    it was in the reporting the pipeline uses to describe itself.
+
+    Absorbing it silently would have been worse than the overcount: the output database keys on
+    `record_id`, so a collision is a live data-loss hazard and must come back as a finding.
+    """
+    scored = [_scored("dup", grounded=0.0), _scored("dup", grounded=0.0),
+              _scored("other", grounded=0.0)]
+    pick = run_wave.select_for_judging(scored, {**CFG, "judge_audit_fraction": 1.0}, salt="s")
+
+    assert pick["duplicate_record_ids"] == ["dup"]
+    assert sorted(pick["auditable"]) == ["dup", "other"], "each id considered exactly once"
+    assert len(pick["audit"]) == len(set(pick["audit"])) == 2
+    assert len(pick["to_judge"]) == len(pick["audit"]), (
+        "the reported sample size must equal the number of records actually judged")
+
+
+def test_the_collision_reaches_the_researcher_as_a_question():
+    qs = run_wave.catalogue_questions("PMC1", {"alignment": [], "ensemble": {}}, [], [],
+                                      duplicate_record_ids=["ts10"])
+    q = [x for x in qs if x["kind"] == "colliding_record_id"]
+    assert q and "silently overwrite each other" in q[0]["detail"]
+
+
 def test_judging_everything_is_still_expressible():
     """A project that wants the old behaviour sets the fraction to 1.0 — the knob is a dial,
     not a switch, and the pre-D-079 setting must remain reachable."""

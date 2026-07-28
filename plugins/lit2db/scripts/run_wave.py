@@ -515,9 +515,22 @@ def select_for_judging(scored: list, cfg: dict, salt: str) -> dict:
     """
     lane = cfg.get("review_lane", [])
     thr = cfg["auto_accept_threshold"]
-    selected, rejected, classes = [], [], {}
+    selected, rejected, classes, seen = [], [], {}, set()
+    # RECORD IDS ARE NOT GUARANTEED UNIQUE, and everything downstream assumes they are.
+    # Measured on PMC10325987: `merge_passes` returned 15 records under 11 distinct ids, the
+    # `fallback1` and `ordinal` identity tiers colliding. Sampling over the raw list drew the
+    # same id twice, `to_judge` deduplicated it, and the run REPORTED a 3-record audit slice
+    # having judged 2 — a claim larger than what happened, which is the one thing this
+    # pipeline may not do. Deduplicate here, and hand the collision back as a finding rather
+    # than absorbing it: a record id that names two different records is a defect upstream,
+    # and it is the same id the output database uses as its primary key.
+    duplicates = []
     for s in scored:
         rec, rid = s["record"], s["record"]["record_id"]
+        if rid in seen:
+            duplicates.append(rid)
+            continue
+        seen.add(rid)
         # Selection is the gate MINUS the veto — the same predicate the write path applies, so
         # the two cannot disagree about who was worth judging and who was worth writing.
         if not selection_reasons(rec, s["composite"], thr,
@@ -530,6 +543,7 @@ def select_for_judging(scored: list, cfg: dict, salt: str) -> dict:
     audit = audit_slice(auditable, float(cfg["judge_audit_fraction"]), salt)
     return {"selected": selected, "audit": audit, "rejected": rejected,
             "auditable": auditable, "denial_class": classes,
+            "duplicate_record_ids": sorted(set(duplicates)),
             "to_judge": sorted(set(selected) | set(audit))}
 
 
@@ -560,7 +574,8 @@ def apply_verdicts(scored: list, verdicts: dict, judged: set) -> None:
 def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list,
                         unjudged: list | None = None, review_lane: tuple = (),
                         vetoed: list | None = None, audit_disagreements: list | None = None,
-                        blocked_on_process: int = 0) -> list:
+                        blocked_on_process: int = 0,
+                        duplicate_record_ids: list | None = None) -> list:
     """Deterministic signals that a RESEARCHER, not the pipeline, has to resolve.
 
     Everything here is a fact about the run, not an opinion about the chemistry. The head
@@ -617,6 +632,19 @@ def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list,
     # the same way and neither is visible in the yield, so it is said out loud: a paper that
     # produced nothing because a stage replied unusably must not read like a paper with nothing
     # in it. This is the same distinction v0.31.0 drew for a stage that never ran.
+    # ONE ID NAMING TWO RECORDS IS A SILENT DATA-LOSS HAZARD, not a bookkeeping wrinkle. The
+    # output DB declares `record_id TEXT PRIMARY KEY` and writes with `INSERT OR REPLACE`, so
+    # if two colliding records both cleared the gate the second would overwrite the first with
+    # no error, no reason string, and nothing in any artifact to show a row had gone. Measured
+    # on PMC10325987: 15 records under 11 ids, the fallback1 and ordinal identity tiers
+    # colliding. It has never fired — every paper carrying duplicates has written zero records
+    # — which is exactly why it needs saying out loud before it does.
+    for rid in (duplicate_record_ids or []):
+        qs.append({"paper": paper, "kind": "colliding_record_id",
+                   "detail": f"{rid}: the merge produced more than one record under this id, so "
+                             f"they cannot be told apart downstream. The output database keys on "
+                             f"record_id, so two colliding records that both cleared the gate "
+                             f"would silently overwrite each other. Only the first was scored."})
     if blocked_on_process:
         qs.append({"paper": paper, "kind": "verification_unusable",
                    "detail": f"{blocked_on_process} record(s) were blocked because the "
@@ -902,6 +930,7 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
         "audit_sample": [{"record_id": r, "denial_class": pick["denial_class"][r],
                           "verdict": (verdicts.get(r) or {}).get("verdict")}
                          for r in pick["audit"]],
+        "duplicate_record_ids": pick["duplicate_record_ids"],
         "denial_classes": {c: sum(1 for v in pick["denial_class"].values() if v == c)
                            for c in sorted(set(pick["denial_class"].values()))},
     }
@@ -925,7 +954,8 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                              review_lane=tuple(cfg.get("review_lane", [])),
                              vetoed=vetoed, audit_disagreements=disagreements,
                              blocked_on_process=judge_scope["denial_classes"].get(
-                                 DENIAL_PROCESS, 0))
+                                 DENIAL_PROCESS, 0),
+                             duplicate_record_ids=pick["duplicate_record_ids"])
     log(f"{paper}: {written}/{len(scored)} written, {len(qs)} question(s), "
         f"{time.time() - t0:.0f}s")
     return {"paper": paper, "status": "done", "n_records": len(scored), "n_written": written,
