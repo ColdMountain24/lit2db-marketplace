@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.38.0 — 2026-07-28
+A record id is qualified by its source, and replay can finally see the class that needed it.
+
+**The collision stopped being hypothetical.** On the compound pilot's fourth paper,
+sulfadixiamycins A and B — composite **1.000**, supported by the adversarial judge — were refused
+because `cpd1`/`cpd2` were already held by corvol ethers A and B **from a different paper**.
+Extractors number records per paper, so `cpd1` means "the first compound in some paper" and two
+papers collide by construction. Under a bare `INSERT OR REPLACE` corvol ether A would have been
+silently overwritten: no error, no reason string, nothing in any artifact to show a row had gone.
+
+- **Stored ids are now `<source_id>:<record_id>`** (D-091). The local id stays in the payload and
+  is returned as `local_record_id`, because "the first compound in this paper" is a true fact
+  about the source. Re-gating the pilot's saved records: **3 written → 5**, which is every
+  compound that cleared score and judge.
+- **The collision refusal survives**, aimed at what it can still catch: two DIFFERENT records
+  under one id from ONE source, which `merge_passes` really does produce (15 records under 11
+  ids on PMC10325987). Qualification cannot help there, so the denial is still the answer — and
+  its message no longer tells the reader to qualify an id that is already qualified.
+- **A record whose fields cite two sources is refused.** A record belongs to one source, so one
+  that does not cannot be identified by one.
+- **`replay.py` now gates the whole run against ONE database instead of one per paper.** This is
+  the more important half. Replay had been run repeatedly over these very artifacts without
+  seeing the collision, because each paper got a clean database — an instrument that resets the
+  state between two events cannot observe an interaction between them. It is the reason a
+  known, documented hazard reached a live run before firing.
+- 587 → 594 tests.
+
 ## 0.37.0 — 2026-07-28
 A compound named as one of a series is named by the sentence that names the series.
 

@@ -86,8 +86,17 @@ def load_passes(pdir: pathlib.Path) -> list:
     return out
 
 
-def replay_one(pdir: pathlib.Path, cfg: dict) -> dict:
-    """Merge -> score -> gate for one paper's saved passes. Never raises."""
+def replay_one(pdir: pathlib.Path, cfg: dict, db: str | None = None) -> dict:
+    """Merge -> score -> gate for one paper's saved passes. Never raises.
+
+    `db` is the throwaway database to gate against, SHARED ACROSS THE WHOLE REPLAY. It used to
+    be created per paper, which made replay structurally blind to the one defect class that
+    depends on database state: a record id held by a DIFFERENT paper. That is not hypothetical
+    -- the compound pilot lost two verified compounds to exactly that, and replay had been run
+    over the same artifacts without seeing it, because each paper got a clean database. An
+    instrument that resets the state between the two events cannot observe an interaction
+    between them.
+    """
     name = pdir.name
     passes = load_passes(pdir)
     row = {"paper": name, "passes": [len(p) for p in passes]}
@@ -137,8 +146,10 @@ def replay_one(pdir: pathlib.Path, cfg: dict) -> dict:
     # these records were already gated once, and re-writing them would double-count a yield.
     written, denials = 0, {}
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            db = str(pathlib.Path(tmp) / "replay.db")
+        with contextlib.ExitStack() as stack:
+            if db is None:      # standalone call: still isolated, just not shared
+                db = str(pathlib.Path(stack.enter_context(
+                    tempfile.TemporaryDirectory())) / "replay.db")
             for rec in records:
                 sr = score_and_route(record=rec, weights_key=cfg["weights_key"],
                                          ensemble_k=len(cfg["models"]),
@@ -182,8 +193,12 @@ def main() -> int:
     print(f"replaying {len(runs)} saved paper-runs — no model calls\n")
 
     rows, failures = [], 0
+    # ONE database for the whole replay, so a record id claimed by an earlier paper is visible
+    # to a later one -- the interaction a per-paper database hid.
+    tmpdir = tempfile.TemporaryDirectory()
+    shared_db = str(pathlib.Path(tmpdir.name) / "replay.db")
     for pdir in runs:
-        row = replay_one(pdir, cfg)
+        row = replay_one(pdir, cfg, db=shared_db)
         rows.append(row)
         if "FAILED" in row["status"]:
             failures += 1

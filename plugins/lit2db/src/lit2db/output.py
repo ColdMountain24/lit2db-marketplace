@@ -67,12 +67,23 @@ def upsert(record: dict, composite_confidence: float, db_path: str,
     human-review or quarantine queue. This is what makes the ratified quality bar mechanical
     rather than advisory.
 
-    **A COLLIDING `record_id` IS REFUSED, not silently replaced.** The table keys on
-    `record_id`, and `INSERT OR REPLACE` would let a second record under the same id overwrite
-    the first with no error, no reason string, and nothing in any artifact to show a row had
-    gone. That is not hypothetical: `merge_passes` returned 15 records under 11 ids on
-    PMC10325987, and record ids are per-source ordinals, so `ts6` exists in more than one paper.
-    It has never fired only because every paper carrying duplicates wrote zero records.
+    **THE STORED ID IS SOURCE-QUALIFIED: `<source_id>:<record_id>`** (D-091). Extractors number
+    records per paper, so `cpd1` is the first compound in *some* paper and two papers collide by
+    construction. This is not hypothetical and it is no longer prospective: on the compound
+    pilot's fourth paper, sulfadixiamycins A and B — composite 1.000, supported by the
+    adversarial judge — were refused because `cpd1`/`cpd2` were already held by corvol ethers A
+    and B from a different paper. Under a bare `INSERT OR REPLACE` the corvols would have been
+    silently overwritten: no error, no reason string, nothing in any artifact to show a row had
+    gone.
+
+    The local id stays in the payload, because "the first compound in this paper" is a true fact
+    about the source and worth keeping; the qualified form is what the table keys on and what
+    `db_query` returns.
+
+    **The collision check survives qualification, now aimed at the case it can still catch:**
+    two DIFFERENT records under one id from ONE source, which `merge_passes` really does produce
+    (15 records under 11 ids on PMC10325987). Qualification cannot help there — same source, same
+    local id — so the refusal is still the answer.
 
     Re-writing the SAME record is still allowed — a re-run must be idempotent — so the check is
     on the payload, not on the id alone. A genuine collision is a denial with a reason, which is
@@ -101,24 +112,37 @@ def upsert(record: dict, composite_confidence: float, db_path: str,
                     "route_to": "human_review_or_quarantine_queue"}
 
     payload = rec.model_dump_json()
+    sources = {fv.provenance.source_id for fv in rec.fields
+               if getattr(fv.provenance, "source_id", None)}
+    if len(sources) > 1:
+        # One record, two sources: the unit of analysis says a record belongs to one source, so
+        # this is a defect upstream rather than something to pick a winner for.
+        return {"written": False, "decision": "deny",
+                "reasons": [f"record's fields cite {len(sources)} different sources "
+                            f"({sorted(sources)}) — a record belongs to one source, so it "
+                            f"cannot be identified by one"],
+                "route_to": "human_review_or_quarantine_queue"}
+    stored_id = f"{sources.pop()}:{rec.record_id}" if sources else rec.record_id
+
     con = connect(db_path)
     try:
         prior = con.execute("SELECT payload_json FROM records WHERE record_id = ?",
-                            (rec.record_id,)).fetchone()
+                            (stored_id,)).fetchone()
         if prior is not None and prior[0] != payload:
             return {"written": False, "decision": "deny",
-                    "reasons": [f"record_id '{rec.record_id}' is already held by a DIFFERENT "
-                                f"record — writing would silently replace it. Record ids are "
-                                f"per-source ordinals and are not unique across sources; "
-                                f"qualify the id before writing."],
+                    "reasons": [f"record_id '{stored_id}' is already held by a DIFFERENT record "
+                                f"— writing would silently replace it. The id is already "
+                                f"source-qualified, so this is a collision WITHIN one source: "
+                                f"the merge produced two different records under one id."],
                     "route_to": "human_review_or_quarantine_queue"}
         con.execute("INSERT OR REPLACE INTO records VALUES (?,?,?,?,?,?,?)",
-                    (rec.record_id, rec.entity_type, composite_confidence, "auto_accept",
+                    (stored_id, rec.entity_type, composite_confidence, "auto_accept",
                      "active", payload, datetime.now(timezone.utc).isoformat()))
         con.commit()
     finally:
         con.close()
-    return {"written": True, "decision": "allow", "record_id": rec.record_id,
+    return {"written": True, "decision": "allow", "record_id": stored_id,
+            "local_record_id": rec.record_id,
             "held_for_review": [fv.field_name for fv in held]}
 
 
