@@ -28,6 +28,11 @@ non-deterministic LLM extractor, and nothing reaches the database without cleari
 /plugin install lit2db@lit2db-marketplace
 ```
 
+**Then quit Claude Code and start a new session.** `/reload-plugins` does *not* restart the
+plugin's MCP server — it refreshes skills, commands, agents and hooks only, so a stale server
+will keep serving an old version's tools with no error anywhere. Only a fresh session picks up
+new MCP tools. `INSTALL.md` has the full walkthrough and a troubleshooting table.
+
 Local development:
 
 ```
@@ -35,15 +40,26 @@ Local development:
 /plugin install lit2db@lit2db-marketplace
 ```
 
+## Start here
+
+```
+/lit2db-start
+```
+
+Four questions in your own language — what you want to collect, what one row should be, which
+papers count, and what you would do with the finished table. It hands off automatically to the
+Stage-0.5 interview carrying your answers, so you never have to know the stage numbering below.
+Everything else in this README is what happens underneath.
+
 ## What's in the box
 
 | Component | What it is |
 |---|---|
 | **7 agents** (`agents/`) | Stage-specialized subagents: scope-elicitation (Opus), ingest, extractor, **verifier-judge** (a different *model* from the extractor — Opus judging Sonnet; a different *provider* is opt-in, see below), entity-resolver, schema-architect, and **contradiction-hunter** (audits the extractor's choice of evidence — see below). |
 | **3 hooks** (`hooks/`) | The deterministic control spine: a hard PreToolUse **write-gate**, a PostToolUse Pydantic-validate + observability emitter, a Stop/SessionEnd cost-cap + checkpoint. |
-| **MCP server** (`mcp/`) | The deterministic spine as callable tools — `build_store` + `locate_spans` (Stage 1), `merge_extraction_passes` + `aggregate_ensemble` (Stage 3), `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`, plus `check_retraction` (Crossref), `resolve_access` (Unpaywall), and `rank_manual_queue`. SQLite-backed; the three lookup tools are the only network calls and all fail closed. |
+| **22 MCP tools** (`mcp/`) | The deterministic spine as callable tools — `build_store` + `build_abstract_store` + `locate_spans` (Stage 1), `merge_extraction_passes` + `aggregate_ensemble` (Stage 3), `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`, `db_query`, `resolve_entities`, `resolve_structure`, the review/calibration set (`review_queue`, `record_candidate`, `record_adjudication`, `calibration_report`, `rank_manual_queue`), corpus build (`screen_corpus`, `dedupe_corpus`), plus `check_retraction` (Crossref) and `resolve_access` (Unpaywall). SQLite-backed; the network lookups are the only calls that leave the machine and all fail closed. |
 | **Skill** (`skills/scope-elicitation/`) | The Stage-0.5 protocol: ten narrowing axes, the ratification ledger, the propose-structure / ratify-substance boundary. |
-| **Commands** (`commands/`) | `/lit2db-new-project`, `/lit2db-extract` (one source end-to-end), `/lit2db-verify`, `/lit2db-status`. |
+| **7 commands** (`commands/`) | **`/lit2db-start`** (start here — one guided intake in plain language), `/lit2db-new-project` (the long-form interview), `/lit2db-extract` (one source end-to-end), `/lit2db-verify`, `/lit2db-status`, `/lit2db-review` (confirm candidates, building your calibration set), `/lit2db-review-ui` (the same loop in a browser, each candidate beside its paragraph). |
 | **Contracts** (`src/lit2db/contracts/`, `gate.py`) | Pydantic formalization of the ledger invariant, provenance record, evidence tier, confidence composite, and routing, plus the write-gate predicate the hook and the MCP tool both apply. **Domain-blind.** |
 
 ### One artifact: what runs is what ships

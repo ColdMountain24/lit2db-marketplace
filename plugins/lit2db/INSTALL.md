@@ -33,49 +33,59 @@ claude --version
 
 ---
 
-## 1. Get the package onto disk
+## 1. Install in Claude Code
 
-Unpack the marketplace repo somewhere stable (not /tmp):
-
-```bash
-mkdir -p ~/plugins && cd ~/plugins
-tar xzf /path/to/lit2db-plugin.tar.gz
-ls lit2db-marketplace/.claude-plugin/marketplace.json   # sanity check
-```
-
-You now have `~/plugins/lit2db-marketplace/`.
-
----
-
-## 2. Install in Claude Code
-
-Launch Claude Code, then run these two slash commands in the session:
+The marketplace is public, so there is nothing to download by hand. Launch Claude Code and run
+these two slash commands in the session:
 
 ```
-/plugin marketplace add ~/plugins/lit2db-marketplace
+/plugin marketplace add ColdMountain24/lit2db-marketplace
 /plugin install lit2db@lit2db-marketplace
 ```
 
-- The first registers the local marketplace (Claude Code reads
-  `.claude-plugin/marketplace.json`).
-- The second installs the `lit2db` plugin from it — agents, hooks, MCP server, skill, and
-  commands are all auto-discovered.
+- The first registers the marketplace (Claude Code reads `.claude-plugin/marketplace.json`).
+- The second installs the plugin — agents, hooks, MCP server, skill, and commands are all
+  auto-discovered.
 
-Restart the session if prompted so the MCP server and hooks load.
+<details>
+<summary>Installing from a local checkout instead</summary>
 
-**Verify the install took:**
+```bash
+git clone https://github.com/ColdMountain24/lit2db-marketplace ~/plugins/lit2db-marketplace
+```
+
+then `/plugin marketplace add ~/plugins/lit2db-marketplace` and the same install line. Put it
+somewhere stable — not `/tmp`.
+</details>
+
+---
+
+## 2. Confirm the install, and beware the stale-server trap
+
+**Quit Claude Code and start a new session after installing.** This is not optional politeness:
+
+> **`/reload-plugins` does NOT restart the plugin's MCP server.** It refreshes skills, commands,
+> agents and hooks only. We measured this twice: a server process over four hours old kept
+> serving an old version's tools while the repo on disk was several releases ahead, with no
+> error anywhere. **Only a fresh session picks up new MCP tools.**
+
+Then:
 
 ```
 /help
 ```
 
-You should see the five lit2db commands listed:
+You should see **seven** lit2db commands:
 
-- `/lit2db-start` — **start here**: one guided intake, then it builds your database
-- `/lit2db-new-project` — the long-form Stage-0.5 scope-elicitation interview
-- `/lit2db-extract` — one source end-to-end: store → k passes → merge → verify → route → gate
-- `/lit2db-verify` — run the verify/route/gate spine over records
-- `/lit2db-status` — selfcheck the loaded plugin, then report the ML-ready view
+| Command | What it does |
+|---|---|
+| `/lit2db-start` | **Start here.** One guided intake in plain language, then it builds your database. |
+| `/lit2db-new-project` | The long-form Stage-0.5 scope-elicitation interview. |
+| `/lit2db-extract` | One source end-to-end: store → k passes → merge → verify → route → gate. |
+| `/lit2db-verify` | Run one record through the verify → route → gate spine. |
+| `/lit2db-status` | Selfcheck the loaded plugin, then report both tiers of the database. |
+| `/lit2db-review` | Confirm candidate records one at a time; builds your calibration set as you go. |
+| `/lit2db-review-ui` | The same loop in a browser, each candidate beside the paragraph it came from. |
 
 **Then confirm you got all 22 MCP tools**, not a stale subset:
 
@@ -86,13 +96,17 @@ You should see the five lit2db commands listed:
 It runs `scripts/selfcheck.py` against `${CLAUDE_PLUGIN_ROOT}` — the copy the session actually
 launched — and stops loudly if the tools it declares aren't the tools you hold. The spine is
 `validate_record`, `ground_literature`, `validate_mapping`, `score_and_route`, `gate_upsert`,
-`db_query`; Stage 1 adds `build_store`, `locate_spans`; Stage 3 adds `merge_extraction_passes`,
-`aggregate_ensemble`; and three reach the network and fail closed — `check_retraction`,
-`resolve_access`, `rank_manual_queue`.
+`db_query`; Stage 1 adds `build_store`, `build_abstract_store`, `locate_spans`; Stage 3 adds
+`merge_extraction_passes`, `aggregate_ensemble`; review and calibration add `review_queue`,
+`record_candidate`, `record_adjudication`, `calibration_report`, `rank_manual_queue`; corpus
+build adds `screen_corpus`, `dedupe_corpus`; plus `resolve_entities`, `resolve_structure`, and
+the two network lookups that fail closed — `check_retraction` (Crossref), `resolve_access`
+(Unpaywall).
 
-**If you see only 6, the plugin did not reload.** That is a real bug we hit: a stale marketplace
-clone served v0.1.0 against a v0.9.0 repo for two sessions with no error anywhere. Fix with
-`/plugin marketplace update`, reinstall, then `/reload-plugins`.
+**If the count is short, the plugin did not reload.** That is a real bug we hit: a stale
+marketplace clone served v0.1.0 against a v0.9.0 repo for two sessions with no error anywhere.
+Fix with `/plugin marketplace update`, reinstall, then **quit and restart the session** — not
+`/reload-plugins`, per the warning above.
 
 ---
 
@@ -111,19 +125,23 @@ python3 scripts/run_demo.py
 | Record | What it is | Naive grounding | Adversarial judge | Gate | Why |
 |---|---|---|---|---|---|
 | **A** | clean single-condition Km | ✅ pass | ✅ SUPPORTED | **WRITE** | value cleanly supported by its quote |
-| **B** | condition-multiplexed kcat ("73.6 and 40.8 … at 0.3% and 0.75%") | ✅ pass | ❌ AMBIGUOUS | **DENY → human-review** | number *appears* in the quote, so surface grounding passes — but it isn't bound to a single condition, and the judge catches that |
+| **B** | condition-multiplexed kcat ("73.6 and 40.8 … at 0.3% and 0.75%") | ✅ pass | ❌ UNSUPPORTED | **DENY → human-review** | number *appears* in the quote, so surface grounding passes — but it isn't bound to a single condition, and the judge catches that |
 | **C** | value from a **retracted** paper | ✅ pass | ✅ SUPPORTED | **DENY → quarantine** | grounds and judge-supports, but the gate refuses a retracted source |
 
 **The one-line takeaway for the room:** *naive grounding passes all three; only record A actually
 enters the database. B is exactly the project's thesis — high surface grounding, caught by a
 stricter adversarial judge — and C shows the gate enforces provenance rules grounding can't see.*
 
-Expected final line of output:
+Expected final lines of output:
 
 ```
 ML-ready view (auto-accepted, active-source only): 1 record(s)
-   demoA  enzyme_substrate_pair  conf=0.974
+   PMC_demo_A:demoA  enzyme_substrate_pair  conf=1.000
 ```
+
+(The record id is qualified by its source — `PMC_demo_A:demoA` — because a bare per-paper
+ordinal can name two different records in two different papers, and the gate refuses a write
+that would collide.)
 
 ---
 
@@ -135,7 +153,8 @@ python3 -m pip install "pytest>=7"
 python3 -m pytest -q
 ```
 
-Expect `330 passed, 1 skipped` (the skip is a network test; `LIT2DB_NETWORK_TESTS=1` runs it).
+Expect the suite to pass — **at least 744 tests** as of v0.51.0, with 2 skipped (network tests;
+`LIT2DB_NETWORK_TESTS=1` runs them). A number below that means you are on an older checkout.
 
 The two worth naming to a skeptic are `test_smoke.py` — the ratification-ledger invariant, i.e.
 an agent provably cannot slip an unratified field into a frozen schema — and `test_spine.py`,
@@ -177,8 +196,8 @@ same verify → route → gate spine you just watched in the demo.
 
 ## What's real vs. what's stubbed (be honest with the room)
 
-- **Real today:** install path, all 13 MCP tools, the 3 hooks, the deterministic verify→route→gate
-  spine, the offline demo, the 330 tests, the elicitation interview.
+- **Real today:** install path, all 22 MCP tools, the 3 hooks, the deterministic verify→route→gate
+  spine, the offline demo, the 744 tests, the elicitation interview, the review/calibration loop.
 - **Supplied by the orchestrator at runtime:** the *adversarial judge* verdict. The
   MCP server ships a naive lexical/numeric grounding baseline so it's self-contained and testable;
   the strict judge that produced the 39%-flagged pilot result runs in Claude Code itself and feeds
