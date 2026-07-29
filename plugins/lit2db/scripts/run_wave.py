@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import datetime as dt
+import functools
 import hashlib
 import json
 import math
@@ -66,6 +67,7 @@ from lit2db.output import record_candidate, upsert
 from lit2db.structures import resolve_structure, structure_fields            # noqa: E402
 from lit2db.taxonomy import resolve_taxon, taxon_fields                      # noqa: E402
 from lit2db.scoring import score_and_route                    # noqa: E402
+from lit2db.spec_context import spec_context                  # noqa: E402
 from lit2db.contracts import DEFAULT_WEIGHTS, required_agreement  # noqa: E402
 # THE PIPELINE ITSELF NOW LIVES IN THE LIBRARY. It used to live here, and scoring/gating were
 # reached by loading the MCP server file as a module — so the code that ran and the code that
@@ -78,6 +80,17 @@ from lit2db.pipeline import (                                 # noqa: E402
 
 PLUGIN = pathlib.Path(__file__).resolve().parent.parent
 _log_lock = threading.Lock()
+
+
+@functools.lru_cache(maxsize=8)
+def _spec_context_for(path: str) -> str:
+    """The ratified spec rendered once per wave, not once per paper (D-111).
+
+    Cached on the PATH, so every pass of every paper is handed byte-identical context. If two
+    passes could be given different context the ensemble would no longer be measuring the model
+    — it would be measuring the prompt, which is the confound D-053 exists to avoid.
+    """
+    return spec_context(path)
 # The gate writes SQLite. With paper_concurrency > 1 several papers reach the gate at once,
 # and concurrent writers to one SQLite file produce "database is locked" — which would surface
 # as a gate DENIAL, i.e. a paper silently losing records to a plumbing fault while every
@@ -267,6 +280,8 @@ def run_passes(paper: str, cfg: dict, pdir: pathlib.Path, fuse: Fuse) -> tuple[l
                   .replace("{STORE}", str(store))
                   .replace("{OUT_DIR}", str(out_dir))
                   .replace("{WRITES}", f"pass{i + 1}.json")
+                  .replace("{SPEC_CONTEXT}",
+                           _spec_context_for(cfg["spec"]) if cfg.get("spec") else "")
                   + "\n\nYou are ONE independent pass of an ensemble. Do not read any other "
                     "pass's output directory. Write only to your own out_dir.")
         return i, call_agent(prompt, models[i], label=f"{paper} pass{i + 1}/{models[i]}",
@@ -703,6 +718,25 @@ def preflight(cfg: dict, papers: list) -> list[str]:
                 if token not in body:
                     problems.append(f"extract_prompt is missing the {token} placeholder — "
                                     f"the agent would be told to read a literal path.")
+            # D-111, and the refusal is SYMMETRIC on purpose. A template carrying the token with
+            # no spec configured would hand the agent a literal "{SPEC_CONTEXT}". A config naming
+            # a spec whose template never uses it is worse and quieter: the wave would declare it
+            # gave the extractor the researcher's ratified scope and in fact give it nothing —
+            # the same declaration-not-backed-by-the-thing failure the 2026-07-28 audit found.
+            spec_path = cfg.get("spec")
+            if "{SPEC_CONTEXT}" in body and not spec_path:
+                problems.append("extract_prompt uses {SPEC_CONTEXT} but no `spec` is configured "
+                                "— the agent would be handed the literal placeholder.")
+            if spec_path and "{SPEC_CONTEXT}" not in body:
+                problems.append(f"`spec` is configured ({spec_path}) but extract_prompt never "
+                                f"uses {{SPEC_CONTEXT}} — the wave would claim to give the "
+                                f"extractor the ratified scope and give it nothing.")
+            if spec_path:
+                try:
+                    _spec_context_for(str(spec_path))
+                except Exception as e:
+                    problems.append(f"`spec` {spec_path} did not validate as a ratified "
+                                    f"SchemaReadySpec: {type(e).__name__}: {str(e)[:200]}")
 
     stores = pathlib.Path(cfg.get("stores", ""))
     missing = [p for p in papers if not (stores / p / "full.txt").exists()]

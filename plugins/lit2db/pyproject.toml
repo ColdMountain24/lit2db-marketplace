@@ -8,7 +8,7 @@ name = "lit2db"
 # `/plugin install` and `selfcheck.py` read, and a test pins it against `marketplace.json`. This
 # file is pinned to nothing, which is how it sat at 0.5.0 through forty-three releases: a third
 # version number that no check compares to anything is not a version, it is a decoration.
-version = "0.49.0"
+version = "0.50.0"
 description = "Domain-agnostic literature/structured-data -> ML-ready database pipeline (reference scaffold + MCP spine)."
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2", "mcp>=1.0", "certifi>=2023"]
