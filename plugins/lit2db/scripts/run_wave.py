@@ -68,6 +68,7 @@ from lit2db.structures import resolve_structure, structure_fields            # n
 from lit2db.taxonomy import resolve_taxon, taxon_fields                      # noqa: E402
 from lit2db.scoring import score_and_route                    # noqa: E402
 from lit2db.spec_context import spec_context                  # noqa: E402
+from lit2db.llm_grounding import build_prompt, parse_verdict, resolve   # noqa: E402
 from lit2db.contracts import DEFAULT_WEIGHTS, required_agreement  # noqa: E402
 # THE PIPELINE ITSELF NOW LIVES IN THE LIBRARY. It used to live here, and scoring/gating were
 # reached by loading the MCP server file as a module — so the code that ran and the code that
@@ -425,7 +426,39 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     (pdir / "hunter_raw.txt").write_text(hr["text"] or "(no output)")
 
     # --- assemble + score: everything the pipeline can decide without a model call --------
-    records, dropped = assemble(paper, cfg, merged, hunt)
+    gdir = pdir / "grounding"
+
+    def model_grounder(record_id: str, field: str, value, quote: str) -> list:
+        """Ask the model, one pair per call, `grounding_repeats` times. Persist what it said.
+
+        THE RAW REPLIES ARE ALWAYS WRITTEN, readable or not — the same rule the judge stage
+        learned the hard way. A grounding verdict nobody can re-read is a number the database
+        cannot defend, and `replay.py` reads exactly these files to re-derive the run for free.
+
+        Each repeat is an INDEPENDENT call. Batching them into one question would ask the model
+        to be consistent in a single context, which is not the property being tested — and D-112
+        measured that sharing a question actively suppresses support.
+        """
+        gdir.mkdir(exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{record_id}.{field}")
+        ctx = _spec_context_for(cfg["spec"]) if cfg.get("spec") else None
+        prompt = build_prompt(value, quote, spec_context=ctx)
+        out = []
+        for i in range(max(2, int(cfg.get("grounding_repeats", 2)))):
+            r = call_agent(prompt, cfg.get("grounding_model", "sonnet"),
+                           label=f"{paper} ground/{safe}#{i + 1}", cwd=pdir, fuse=fuse,
+                           stage="ground", unit=paper, read_dirs=(store,),
+                           timeout=cfg.get("_call_timeout", 1800))
+            (gdir / f"{safe}.{i + 1}.raw.txt").write_text(r["text"] or "")
+            out.append(parse_verdict(r["text"] or "") if r["ok"] else None)
+        (gdir / f"{safe}.json").write_text(json.dumps(
+            {"record_id": record_id, "field": field, "value": value, "quote": quote,
+             "verdicts": out, "resolved": resolve(out)}, indent=1))
+        return out
+
+    records, dropped = assemble(
+        paper, cfg, merged, hunt,
+        grounder=model_grounder if cfg.get("grounding_mode") == "llm" else None)
     scored = []
     for r in records:
         sr = score_and_route(record=r, weights_key=cfg.get("weights_key", "numeric"),
@@ -737,6 +770,26 @@ def preflight(cfg: dict, papers: list) -> list[str]:
                 except Exception as e:
                     problems.append(f"`spec` {spec_path} did not validate as a ratified "
                                     f"SchemaReadySpec: {type(e).__name__}: {str(e)[:200]}")
+
+    # The inversion's configuration (D-110/D-112). `max(2, ...)` in the grounder is a floor, not
+    # a validator: a config asking for one reading would silently RUN two, so the wave would do
+    # something its own config does not say. Refuse instead — the pre-registered bar was about
+    # asking more than once, and a config that thinks it asked once is not evidence of anything.
+    gm = cfg.get("grounding_mode", "lexical")
+    if gm not in ("lexical", "llm"):
+        problems.append(f"grounding_mode {gm!r} is not 'lexical' or 'llm'.")
+    if gm == "llm":
+        reps = cfg.get("grounding_repeats", 2)
+        if not isinstance(reps, int) or reps < 2:
+            problems.append(
+                f"grounding_mode='llm' with grounding_repeats={reps!r} — D-112 pre-registered "
+                f"repeat-and-agree BEFORE the flip rate was measured, and the singleton arm came "
+                f"in at 2.78%, over the 2% bar. One reading is the condition that bar refused.")
+        if cfg.get("grounding_model") and cfg["grounding_model"] in (cfg.get("models") or []):
+            problems.append(
+                f"grounding_model {cfg['grounding_model']!r} is also an extraction model — the "
+                f"grounder would be marking its own work. D-041 keeps these apart and reports "
+                f"any same-family result as a LOWER bound.")
 
     stores = pathlib.Path(cfg.get("stores", ""))
     missing = [p for p in papers if not (stores / p / "full.txt").exists()]

@@ -32,6 +32,7 @@ import re
 
 from .contracts.provenance import process_fingerprint
 from .grounding import ground_literature
+from .llm_grounding import resolve
 from .gate import selection_reasons
 from .store import find_spans, section_of
 
@@ -124,7 +125,7 @@ def _parse_verdicts(text: str, ids: list) -> dict:
 
 
 
-def assemble(paper: str, cfg: dict, merged: dict, hunt: dict) -> tuple[list, list]:
+def assemble(paper: str, cfg: dict, merged: dict, hunt: dict, grounder=None) -> tuple[list, list]:
     """Merged values + provenance + hunter -> records the spine can score.
 
     `merge_passes` returns values WITHOUT provenance — it computes agreement, not evidence — so
@@ -133,6 +134,16 @@ def assemble(paper: str, cfg: dict, merged: dict, hunt: dict) -> tuple[list, lis
 
     **No judge argument (D-079.)** Assembly now runs BEFORE the judge, because scoring is what
     decides who is worth judging. Verdicts are stamped on afterwards by `apply_verdicts`.
+
+    **`grounder` is the inversion's seam (D-110/D-112), and it is INJECTED** — this module's
+    standing rule is that model calls arrive as arguments, so the spine runs and tests without
+    one. Signature `(record_id, field_name, value, quote) -> list[bool | None]`, one entry per
+    repeat. `None` keeps the deterministic lexical rule, which is the default: an existing wave
+    changes behaviour only when its config asks to.
+
+    The driver supplies a grounder that calls the model and persists what it said; `replay.py`
+    supplies one that reads those saved answers back, so a replayed paper re-derives the same
+    grounding with zero model calls. `resolve` is pure, so the agreement rule itself is free.
     """
     store = pathlib.Path(cfg["stores"]) / paper
     full = (store / "full.txt").read_text(encoding="utf-8")
@@ -192,7 +203,22 @@ def assemble(paper: str, cfg: dict, merged: dict, hunt: dict) -> tuple[list, lis
             # signals actually measured, which is what "leave c_ensemble unset" meant.
             if len(merged.get("_passes") or []) < 2:
                 cc.pop("c_ensemble", None)
-            if name in cfg.get("evidence_grounded_fields", []):
+            if grounder is not None and name not in cfg.get("evidence_grounded_fields", []):
+                # THE INVERSION (D-110/D-112). The model decides support; everything else stays
+                # deterministic. Reaching this line already means the quote anchored in full.txt
+                # at a resolved offset — that fact is not up for judgement and is not asked about.
+                #
+                # `evidence_grounded_fields` is excluded for the SAME reason D-061 excluded it
+                # from the lexical rule: no paper contains the string "biosynthesis_demonstrated",
+                # so "does this quote assert that value" is not a question the text can answer.
+                # D-112's shadow arm did not know about this exclusion and asked anyway — which
+                # is where BOTH of its unstable judgements came from. On the fields production
+                # actually grounds, it measured 0 flips in 52.
+                g = resolve(grounder(rec["record_id"], name, value, quote))
+                cc["c_grounded"] = g["c_grounded"]
+                cc["_grounding_mode"] = "llm"
+                cc["_grounding_state"] = g["state"]
+            elif name in cfg.get("evidence_grounded_fields", []):
                 # D-061: a controlled-vocabulary value is never verbatim in a paper — no source
                 # contains the string "biochemically_characterized". Grounding it lexically
                 # scores a CORRECT value 0.0. So ground the evidence instead: reaching this

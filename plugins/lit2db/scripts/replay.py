@@ -130,8 +130,24 @@ def replay_one(pdir: pathlib.Path, cfg: dict, db: str | None = None) -> dict:
                 for rid, v in (json.loads(f.read_text()).get("parsed") or {}).items():
                     if v.get("verdict"):
                         judge[rid] = v["verdict"]
+    # Saved grounding answers (D-110/D-112) replay for FREE — `resolve` is pure, so the
+    # repeat-and-agree rule re-derives without a model call, exactly like the rest of the spine.
+    # A field the saved run never grounded returns [] and resolves to `not_run`, which blocks:
+    # the same fail-closed answer an un-judged record gets, reached by the same reasoning.
+    saved_ground: dict = {}
+    gd = pdir / "grounding"
+    if gd.is_dir():
+        for f in gd.glob("*.json"):
+            with contextlib.suppress(Exception):
+                d = json.loads(f.read_text())
+                saved_ground[(d["record_id"], d["field"])] = d.get("verdicts") or []
+    replay_grounder = None
+    if saved_ground:
+        def replay_grounder(record_id, field, value, quote):   # noqa: F811
+            return saved_ground.get((record_id, field), [])
+
     try:
-        records, dropped = assemble(name, cfg, merged, hunt)
+        records, dropped = assemble(name, cfg, merged, hunt, grounder=replay_grounder)
     except Exception as exc:                                   # noqa: BLE001
         row.update(status="ASSEMBLE FAILED", error=f"{type(exc).__name__}: {exc}")
         return row

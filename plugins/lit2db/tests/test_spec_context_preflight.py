@@ -100,3 +100,39 @@ def test_an_unratified_spec_is_refused_at_preflight(tmp_path):
     run_wave._spec_context_for.cache_clear()
     out = _problems(_cfg(tmp_path, TEMPLATE_WITH_CTX, spec))
     assert "did not validate as a ratified SchemaReadySpec" in out
+
+
+# --- the inversion's configuration (D-110/D-112) -------------------------------------
+
+def _g(tmp_path, **over):
+    cfg = _cfg(tmp_path, TEMPLATE, None)
+    cfg.update(over)
+    return _problems(cfg)
+
+
+def test_llm_grounding_refuses_a_single_reading(tmp_path):
+    """A config asking for one reading must be REFUSED, not silently bumped to two. The floor
+    in the grounder is belt-and-braces; a wave doing something its config does not say is the
+    quiet failure this project keeps finding."""
+    out = _g(tmp_path, grounding_mode="llm", grounding_repeats=1)
+    assert "One reading is the condition that bar refused" in out
+
+
+def test_llm_grounding_accepts_two(tmp_path):
+    out = _g(tmp_path, grounding_mode="llm", grounding_repeats=2)
+    assert "grounding_repeats" not in out
+
+
+def test_an_unknown_grounding_mode_is_refused(tmp_path):
+    assert "is not 'lexical' or 'llm'" in _g(tmp_path, grounding_mode="magic")
+
+
+def test_the_default_stays_lexical_and_silent(tmp_path):
+    assert "grounding_mode" not in _g(tmp_path)
+
+
+def test_the_grounder_may_not_be_an_extraction_model(tmp_path):
+    """D-041's separation. A model grading its own extraction is not an independent check."""
+    out = _g(tmp_path, grounding_mode="llm", grounding_repeats=2,
+             grounding_model="opus", models=["opus"])
+    assert "marking its own work" in out
