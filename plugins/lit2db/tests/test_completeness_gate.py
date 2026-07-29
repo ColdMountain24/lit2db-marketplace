@@ -231,3 +231,47 @@ def test_single_pass_routing_still_requires_GROUNDING():
     ungrounded = FieldValue.model_validate(_field("a", "x") | {
         "confidence_components": {"c_grounded": 0.0, "c_ensemble": None}})
     assert default_route(ungrounded, 1.0, require_ensemble=False) == RouteDecision.human_review
+
+
+# --- 6. root cause vs cascade (2026-07-29) ---------------------------------------------
+def test_one_grounding_failure_is_reported_as_ONE_cause_not_three():
+    """Measured on 87 confirmed-correct compounds the gate threw away: 72% failed for a single
+    reason wearing three hats. At k=1 the composite IS the grounding score, so one lexical miss
+    fails the bar, routes the field to human_review, AND stops the record being selected for
+    judging — which then vetoes it as `never challenged`."""
+    from lit2db.gate import diagnose
+    rec = _record(a="x", b="y")
+    rec["fields"][0]["confidence_components"] = {"c_grounded": 0.0, "c_ensemble": None}
+    rec["fields"][0]["route"] = "human_review"
+    rec["judge_verdict"] = "not_run"
+    reasons = gate_reasons(rec, 0.0, 0.95)
+    d = diagnose(reasons, rec)
+    assert len(reasons) >= 3
+    assert "grounding returned 0.0 on a" in d["root"]
+    assert d["derived"], "the score/route/judge reasons should be marked as consequences"
+    assert not d["independent"]
+
+
+def test_a_genuine_judge_veto_is_NOT_filed_as_a_consequence():
+    """A record that grounded fine and was struck out by the judge has an independent finding,
+    and it must never be presented as fallout from something else."""
+    from lit2db.gate import diagnose
+    rec = _record(a="x", b="y")
+    for fv in rec["fields"]:
+        fv["confidence_components"] = {"c_grounded": 1.0, "c_ensemble": 1.0}
+    rec["judge_verdict"] = "unsupported"
+    d = diagnose(gate_reasons(rec, 1.0, 0.5), rec)
+    assert d["independent"] and "adversarial judge" in d["independent"][0]
+    assert not d["derived"]
+
+
+def test_diagnosis_changes_nothing_about_what_is_written():
+    """The load-bearing assertion. `diagnose` is a READER over the same list — a gate that
+    explained itself better by denying less would be the regression this module prevents."""
+    from lit2db.gate import diagnose
+    rec = _record(a="x", b="y")
+    rec["fields"][0]["confidence_components"] = {"c_grounded": 0.0}
+    before = gate_reasons(rec, 0.0, 0.95)
+    diagnose(before, rec)
+    assert gate_reasons(rec, 0.0, 0.95) == before
+    assert before, "still denied"

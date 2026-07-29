@@ -96,14 +96,85 @@ def _ground_scalar(value: object, q: str) -> dict:
     series = _ground_series(sv, sq)
     if series:
         return series
+    interposed = _ground_interposed(sv, sq)
+    if interposed:
+        return interposed
     return {"c_grounded": 0.0, "mode": "string_absent"}
 
 
-# A trailing designator: a single letter, or a small integer, optionally primed/subscripted
-# (`A`, `B'`, `3`, `A1`). Long trailing tokens are not designators -- they are part of the name.
-_DESIGNATOR = r"[a-z](?:['′]|\d{1,2})?|\d{1,3}"
+# How far apart the first and last token may sit and still count as one phrase. Two tokens the
+# paper separates with ", strain " are the same phrase; two tokens forty words apart are two
+# facts the reader joined. 80 characters is a clause, not a paragraph.
+_INTERPOSED_WINDOW = 80
+
+
+def _ground_interposed(sv: str, sq: str) -> dict | None:
+    """Does the quote contain every token of the value, IN ORDER, within one clause?
+
+    Measured 2026-07-29 on 48 denied records whose `species` grounded 0.0: **42 had every token
+    present in the quote**, and 36 of those in the paper's own order. The source writes
+    `Sandaracinus amylolyticus, strain NOSO-4T` and the record stores `amylolyticus NOSO-4T` —
+    the same words in the same order, with the paper's own connective between them. Requiring
+    contiguity there is a TYPOGRAPHIC demand, and D-035 already ruled that normalization exists
+    so dissent implies substance rather than punctuation.
+
+    **This LOOSENS a write-path check, so it is narrow in four ways**, and each guard is doing
+    real work against the same 48 records:
+
+      * IN ORDER. The other 6 records had the tokens reordered — `sp. Cra33g` assembled from
+        "strain (Cra33g) belonging to Amycolatopsis". The paper never wrote that phrase; the
+        extractor composed it. Those must keep failing, and they do.
+      * WITHIN ONE CLAUSE (80 chars), so tokens scattered across a long quote cannot be sewn
+        together into a phrase nobody wrote.
+      * WORD BOUNDARIES on every token, so `atra` cannot match inside `atratus`.
+      * TOKENS OF 2+ CHARACTERS and at least two of them; a single short token is the plain
+        substring case, already handled above, and admitting one here would ground almost
+        anything.
+
+    Scored 1.0 rather than partial, and that is forced rather than chosen: at k=1 the composite
+    IS the grounding score, so anything below the 0.95 accept bar is identical to 0.0. There is
+    no partial credit available at this arity — the honest options are "grounded" or "not", and
+    the mode name records which rule said so.
+    """
+    toks = [t for t in re.split(r"[\s,]+", sv) if t]
+    if len(toks) < 2 or any(len(t) < 2 for t in toks):
+        return None
+    pos, cursor = [], 0
+    for t in toks:
+        m = re.compile(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])").search(sq, cursor)
+        if not m:
+            return None
+        pos.append(m.start())
+        cursor = m.end()          # forward-only: this is what enforces the paper's own order
+    if pos[-1] - pos[0] > _INTERPOSED_WINDOW:
+        return None
+    return {"c_grounded": 1.0, "mode": "interposed_match",
+            "span": sq[pos[0]:cursor], "tokens": len(toks)}
+
+
+# A trailing designator: a letter, optionally a small number, optionally a sub-letter after that
+# (`A`, `B'`, `3`, `A1`, `B7a`); or a bare small integer. Long trailing tokens are not designators
+# -- they are part of the name.
+#
+# `B7a` was NOT covered until 2026-07-29 and the omission was expensive twice over. Measured on
+# `Napyradiomycins A3 (1), B7a (2), B7b (3), and D1 (5)`: `A3` grounded 1.0 and every later member
+# grounded 0.0 -- because an unparseable designator does not merely fail for itself, it TERMINATES
+# the enumeration scan, so `D1` failed too even though `D1` is a shape the old pattern accepted.
+# One unrecognised member silently invalidates the rest of the list.
+#
+# The trailing sub-letter is admitted only AFTER digits (`b7a`), never on its own (`ab`), so a
+# two-letter tail still cannot pose as a designator. This rule LOOSENS a write-path check, and
+# that asymmetry is the whole reason to keep it narrow.
+_DESIGNATOR = r"[a-z](?:\d{1,2}[a-z]?|['′])?|\d{1,3}"
 _DASH = r"[-‐‑‒–—−]"
-_SEP = rf"\s*(?:,|and|&|/|or|{_DASH}|to)\s*"
+# `, and ` is ONE separator, not a comma followed by the designator `a` of the word "and".
+# Without the optional conjunction after the comma, the scan captured `a` from "and" and then
+# stopped, which is why the last member of every Oxford-comma list failed.
+_SEP = rf"\s*(?:,\s*(?:and|or|&)?|and|&|/|or|{_DASH}|to)\s*"
+# A citation marker sitting INSIDE the enumeration: `A3 (1), B7a (2), ...`. Papers interleave the
+# scheme number with the name constantly, and `(` is not a separator, so the scan used to stop at
+# the first one. Skipped rather than parsed -- it is punctuation between members, not a member.
+_CITE = r"(?:\s*\((?:\d{1,3}[a-z]?|[ivx]{1,4})\))?"
 
 
 def _expand(a: str, b: str) -> list[str]:
@@ -149,10 +220,18 @@ def _ground_series(sv: str, sq: str) -> dict | None:
     for sm in re.finditer(rf"(?<![a-z0-9]){stem_pat}\b", sq):
         tail = sq[sm.end():sm.end() + 60]
         # Read the enumeration that immediately follows: designators joined by separators.
-        run = re.match(rf"^\s*\(?\s*({_DESIGNATOR})((?:{_SEP}(?:{_DESIGNATOR}))*)", tail)
+        run = re.match(
+            rf"^\s*\(?\s*({_DESIGNATOR}){_CITE}((?:{_SEP}(?:{_DESIGNATOR}){_CITE})*)", tail)
         if not run:
             continue
-        listed = re.findall(rf"{_DESIGNATOR}", run.group(0))
+        # Read members from the SEPARATED positions only. `re.findall` over the whole run would
+        # also collect the digits inside skipped citation markers -- `(2)` would enter the list
+        # as member `2` -- and a member nobody wrote is exactly the fabricated consensus this
+        # module exists to prevent.
+        # `^[\s(]*`, not a bare `^`: the run begins with the whitespace/paren that followed the
+        # stem, so `^` never reached the FIRST member and every list silently lost its opening
+        # element — which is how `A3` regressed to 0.0 while `B7a` and `B7b` passed.
+        listed = re.findall(rf"(?:^[\s(]*|{_SEP})({_DESIGNATOR}){_CITE}", run.group(0))
         if designator in listed:
             return {"c_grounded": 1.0, "mode": "series_match",
                     "series": run.group(0).strip(), "member": designator}

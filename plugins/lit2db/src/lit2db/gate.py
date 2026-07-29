@@ -387,6 +387,61 @@ def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_
     return reasons
 
 
+# Which denial reasons are CONSEQUENCES of a failed grounding check rather than independent
+# findings. Order matters only for reporting; membership is what the diagnosis uses.
+_DERIVED_FROM_GROUNDING = ("< auto-accept", "routed human_review", "routed cheap_repair",
+                           "never challenged by the adversarial judge")
+
+
+def diagnose(reasons, record=None) -> dict:
+    """Separate the ROOT cause of a denial from the reasons that merely follow from it.
+
+    WHY THIS EXISTS, measured 2026-07-29 on 87 confirmed-correct compounds the gate threw away:
+    **72% of them failed for one reason wearing three hats.** At k=1 the composite IS the
+    grounding score, so a single lexical miss (a) drops the composite below the accept bar,
+    (b) routes the field to `human_review`, and (c) means the driver never SELECTS the record
+    for judging, so `judge=not_run` vetoes it as well.
+
+    The gate was RIGHT in every one of those cases — a value that is not in its quote should not
+    be written. What was wrong is that its output described one failure as a consensus of three,
+    which is how "the gate always denies" became the diagnosis instead of "grounding is brittle".
+    It took a full evening of measurement to see through, and the reason list is the artifact a
+    reviewer reads first.
+
+    **This changes NOTHING about what is written.** `gate_reasons` is untouched and still returns
+    every reason; this is a reader over the same list. A gate that explained itself better by
+    denying less would be the regression this module exists to prevent.
+    """
+    reasons = list(reasons or [])
+    if not reasons:
+        return {"denied": False, "root": None, "derived": [], "independent": []}
+    grounded_zero = []
+    for fv in (record or {}).get("fields") or []:
+        if not isinstance(fv, dict):
+            continue
+        c = fv.get("confidence_components") or {}
+        g = _as_float(c.get("c_grounded"))
+        if g is not None and g <= 0.0:
+            grounded_zero.append(fv.get("field_name"))
+    derived, independent = [], []
+    for r in reasons:
+        (derived if any(d in r for d in _DERIVED_FROM_GROUNDING) else independent).append(r)
+    root = None
+    if grounded_zero and derived:
+        root = (f"grounding returned 0.0 on {', '.join(sorted(set(grounded_zero)))} — "
+                f"the value does not appear in the quote it was given")
+    elif independent:
+        root = independent[0]
+    elif derived:
+        root = derived[0]
+        derived = derived[1:]
+    return {"denied": True, "root": root,
+            # Reported so nobody re-derives it: these follow from `root`, they are not evidence
+            # against the record in their own right.
+            "derived": derived if root and grounded_zero else [],
+            "independent": independent}
+
+
 def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
                  require_contradiction_search: bool = False, review_lane=(),
                  required_fields=(),

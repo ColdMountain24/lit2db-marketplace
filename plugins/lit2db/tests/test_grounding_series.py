@@ -144,3 +144,102 @@ def test_the_rule_is_domain_blind():
     """Same structure, nothing to do with chemistry."""
     assert g("mutant 3", "the mutants 1-5 were assayed in triplicate") == 1.0
     assert g("mutant 9", "the mutants 1-5 were assayed in triplicate") == 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+# 2026-07-29 — two rules that RECOVER records the gate was refusing, both ratified after
+# the 183-paper wave. Each LOOSENS a write-path check, so the guards below are the load-
+# bearing half of these tests: they are what stops a value nobody wrote from grounding.
+# ══════════════════════════════════════════════════════════════════════════════════════
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from lit2db.grounding import ground_literature as _g  # noqa: E402
+
+
+def _s(v, q):
+    return _g(v, q)["c_grounded"]
+
+
+# --- the designator bug: one unparseable member killed the whole list -------------------
+NAPYRA = ("Napyradiomycins A3 (1), B7a (2), B7b (3), and D1 (5) (Figure 1) "
+          "were identified as new compounds")
+
+
+def test_letter_digit_letter_designators_ground():
+    """`B7a` was never a recognised designator shape (letter+digit+letter)."""
+    assert _s("napyradiomycin B7a", NAPYRA) == 1.0
+    assert _s("napyradiomycin B7b", NAPYRA) == 1.0
+
+
+def test_an_unparseable_member_no_longer_kills_the_rest_of_the_list():
+    """THE expensive half. An unrecognised designator does not merely fail for itself — it
+    TERMINATED the enumeration scan, so `D1` failed too despite `D1` being a shape the old
+    pattern already accepted. Measured: A3 grounded 1.0 and every later member grounded 0.0."""
+    assert _s("napyradiomycin D1", NAPYRA) == 1.0
+    assert _s("napyradiomycin A3", NAPYRA) == 1.0
+
+
+def test_citation_markers_inside_the_enumeration_are_skipped():
+    """Papers interleave the scheme number constantly; `(` is not a separator."""
+    assert _s("foobarin C", "foobarins A (1), B (2), and C (3) were isolated") == 1.0
+
+
+def test_the_oxford_comma_no_longer_eats_the_last_member():
+    """`, and ` was parsed as a comma plus the designator `a` OF THE WORD "and", which stopped
+    the scan and killed the final member of every list written that way."""
+    assert _s("foobarin C", "foobarins A, B, and C were isolated") == 1.0
+
+
+def test_the_first_member_is_not_lost():
+    """Regression from the first attempt at this fix: a bare `^` anchor could not reach past the
+    whitespace following the stem, so every list silently lost its OPENING element while later
+    ones passed. Caught only because the previously-passing cases stayed in the suite."""
+    assert _s("corvol ether A", "we propose the trivial names corvol ethers A and B") == 1.0
+    assert _s("sulfadixiamycin B", "sulfadixiamycins A-C were isolated") == 1.0
+    assert _s("mutant 3", "mutants 1-5 were constructed") == 1.0
+
+
+def test_series_guards_hold():
+    assert _s("napyradiomycin C9", "Napyradiomycins A3 (1), B7a (2), and D1 (5)") == 0.0
+    assert _s("napyradiomycin 2", "Napyradiomycins A3 (1), B7a (2), B7b (3)") == 0.0
+    assert _s("widget ab", "widgets a and b") == 0.0          # `ab` is not a designator
+    assert _s("hapalindole 7", "isolated after 7 days of culture") == 0.0   # the D-090 false +ve
+
+
+# --- interposed tokens: the paper's own connective between our words --------------------
+def test_the_papers_own_connective_no_longer_blocks_grounding():
+    """Measured on 48 denied records: 42 had EVERY token present in the quote. The source writes
+    `Sandaracinus amylolyticus, strain NOSO-4T`; the record stores `amylolyticus NOSO-4T`."""
+    q = "The gliding bacterium Sandaracinus amylolyticus, strain NOSO-4T, was characterized"
+    assert _s("amylolyticus NOSO-4T", q) == 1.0
+    assert _g("amylolyticus NOSO-4T", q)["mode"] == "interposed_match"
+
+
+def test_a_value_we_REORDERED_still_fails():
+    """The guard that matters most. 6 of the 48 had the tokens present but in an order the paper
+    never used — `sp. Cra33g` assembled from "strain (Cra33g) belonging to Amycolatopsis sp.".
+    The extractor composed that phrase; no source asserts it."""
+    assert _s("sp. Cra33g",
+              "a rare actinomycete strain (Cra33g) belonging to Amycolatopsis sp.") == 0.0
+    assert _s("atratus SCSIO ZH16",
+              "The strain SCSIO ZH16 was isolated and identified as Streptomyces atratus") == 0.0
+
+
+def test_tokens_must_sit_within_one_clause():
+    """Otherwise two facts a reader joined become one phrase nobody wrote."""
+    assert _s("mouse liver", "the mouse was treated " + "x" * 90 + " and the liver was assayed") == 0.0
+
+
+def test_interposed_guards_hold():
+    assert _s("a b", "a and b") == 0.0                     # tokens too short
+    assert _s("atra tus", "atratus was identified") == 0.0  # word boundaries
+    assert _s("liver mouse", "the mouse liver was assayed") == 0.0   # wrong order
+
+
+def test_a_single_token_value_never_takes_the_interposed_path():
+    """One short token would ground against almost anything; the plain substring rule already
+    covers the legitimate single-token case."""
+    assert _g("cadinol", "the cadinol fraction")["mode"] == "string_match"
+    assert _s("zzz", "the aaa fraction") == 0.0
