@@ -259,7 +259,7 @@ def main(argv=None) -> int:
             print(f"No database at {db or '(none given)'}.")
         db, sources, tmp = seed_demo()
         print(f"Built a demo project in {tmp}\n  4 candidates, 4 stored papers. One of them "
-              f"quotes a sentence that is not in its paper — that one can only be answered "
+              f"quotes a sentence that is not in its paper. That one can only be answered "
               f"'can't tell', which is the point.")
 
     cfg = {"db": db, "sources": sources, "limit": a.limit, "show_all": a.all,

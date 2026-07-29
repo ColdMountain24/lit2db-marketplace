@@ -36,7 +36,38 @@ import urllib.request
 from datetime import datetime, timezone
 
 PUBCHEM = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
-_PROPS = "CanonicalSMILES,InChI,InChIKey,MolecularFormula,MolecularWeight,ExactMass"
+# `SMILES` yields the ISOMERIC form — stereocentres intact (`[C@]`, `[C@@H]`). That is not a
+# preference, it is the point: for terpenoids stereochemistry IS the difference between
+# compounds, and two diastereomers share a connectivity string.
+#
+# We used to request `CanonicalSMILES`. PubChem renamed it, and the failure was doubly silent:
+# the API redirects the request to `ConnectivitySMILES` (stereochemistry STRIPPED) and returns
+# it under THAT key, so `p.get("CanonicalSMILES")` was None on every compound this project has
+# ever resolved. No error, no empty-result signal — just a column that was always blank while
+# `inchikey` and `molecular_formula` beside it populated fine.
+_PROPS = "SMILES,InChI,InChIKey,MolecularFormula,MolecularWeight,ExactMass"
+
+
+# SMILES stereo descriptors: `@` marks a tetrahedral centre (`[C@]`, `[C@@H]`); `/` and `\`
+# mark double-bond geometry. None of these characters appear in a SMILES string for any other
+# reason, so their presence is a reliable read of whether the string states stereochemistry.
+_STEREO_CHARS = frozenset("@/\\")
+
+
+def smiles_kind(smiles):
+    """What does this SMILES string SAY about stereochemistry — not which field it came from.
+
+    Ratified 2026-07-29: a flat string is recorded as stereochemistry-unspecified regardless of
+    which PubChem property answered. The distinction that motivates it: PubChem's isomeric
+    property returns a *flat* string whenever the CID has no stereochemistry defined — `pinene`
+    resolves to `CC1=C2CC(C2(C)C)CC1`, no stereocentres. Labelling that "isomeric" because of the
+    field it arrived in would claim exactly what a natural-products chemist needs to distrust:
+    two diastereomers share a connectivity string, so for terpenoids stereochemistry IS the
+    difference between compounds.
+    """
+    if not smiles:
+        return None
+    return "isomeric" if _STEREO_CHARS & set(smiles) else "stereochemistry_unspecified"
 
 
 # Sentinel: the request never completed, as opposed to the authority saying "no match".
@@ -129,9 +160,14 @@ def resolve_structure(name: str, fetch=http_get_json, timeout_s: float = 20.0) -
     p = props[0]
     if not p.get("InChIKey"):
         return _unresolved(n, "authority returned no InChIKey")
+    smiles = p.get("SMILES") or p.get("ConnectivitySMILES")
     return {"resolved": True, "name": n, "authority": "pubchem",
             "authority_id": str(p.get("CID", "")),
-            "smiles": p.get("CanonicalSMILES"), "inchi": p.get("InChI"),
+            # Fall back to the connectivity form rather than dropping the structure, but say
+            # what the stored string actually SAYS about stereochemistry.
+            "smiles": smiles,
+            "smiles_kind": smiles_kind(smiles),
+            "inchi": p.get("InChI"),
             "inchikey": p.get("InChIKey"),
             "molecular_formula": p.get("MolecularFormula"),
             "molecular_weight": p.get("MolecularWeight"),
@@ -140,7 +176,7 @@ def resolve_structure(name: str, fetch=http_get_json, timeout_s: float = 20.0) -
 
 
 # Which resolved keys become fields on the record, and in what order they are attached.
-STRUCTURE_FIELDS = ("smiles", "inchikey", "inchi", "molecular_formula",
+STRUCTURE_FIELDS = ("smiles", "smiles_kind", "inchikey", "inchi", "molecular_formula",
                     "molecular_weight", "exact_mass", "authority_id")
 
 

@@ -250,7 +250,7 @@ def why_it_stopped_short(row: dict, payload: Optional[dict], autoaccept: Optiona
     elif verdict == "unparseable":
         out.append("The checker ran but its answer could not be read, so nothing confirmed this.")
     elif verdict == "not_run":
-        out.append("Nothing challenged this record — it was never checked against the paper.")
+        out.append("Nothing challenged this record. It was never checked against the paper.")
     if payload.get("judge_note"):
         out.append(f"The checker's note: {payload['judge_note']}")
 

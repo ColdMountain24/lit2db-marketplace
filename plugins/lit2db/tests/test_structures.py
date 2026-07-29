@@ -16,8 +16,13 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from lit2db.structures import resolve_structure, structure_fields  # noqa: E402
 
+# `SMILES` (isomeric), NOT `CanonicalSMILES`. This fixture carried the old property name and
+# that is precisely why the blank-SMILES bug survived: PubChem renamed it, the live API redirects
+# to `ConnectivitySMILES`, and the code read a key nothing returned — while this test went on
+# passing against a mock of an API that no longer exists. A fixture is a claim about the world,
+# and a stale one hides a live failure exactly as well as a wrong assertion does.
 PINENE = {"PropertyTable": {"Properties": [{
-    "CID": 6654, "CanonicalSMILES": "CC1=CCC2CC1C2(C)C",
+    "CID": 6654, "SMILES": "CC1=CC[C@@H]2C[C@H]1C2(C)C",
     "InChI": "InChI=1S/C10H16/c1-7-4-5-8-6-9(7)10(8,2)3/h4,8-9H,5-6H2,1-3H3",
     "InChIKey": "GRWFGVWFFZKLTI-UHFFFAOYSA-N", "MolecularFormula": "C10H16",
     "MolecularWeight": 136.23, "ExactMass": 136.125}]}}
@@ -130,3 +135,67 @@ def test_the_default_fetcher_trusts_a_real_ca_bundle():
     """Not a network test — just that a context is constructible, which is what failed."""
     from lit2db.structures import _ssl_context
     assert _ssl_context() is not None
+
+
+# --- the SMILES column that was blank on every record ever (2026-07-29) -----------------
+def test_we_request_the_ISOMERIC_smiles_property():
+    """PubChem renamed `CanonicalSMILES`, and the failure was doubly silent: the API redirects
+    the request to `ConnectivitySMILES` — stereochemistry STRIPPED — and returns it under THAT
+    key, so `p.get("CanonicalSMILES")` was None on every compound this project resolved. No
+    error, no empty result; a column that was always blank while `inchikey` beside it populated.
+
+    For terpenoids this is not cosmetic: two diastereomers share a connectivity string, so a
+    flat SMILES cannot tell one compound from another."""
+    from lit2db.structures import _PROPS
+    assert "SMILES" in _PROPS.split(",")
+    assert "CanonicalSMILES" not in _PROPS
+
+
+def test_a_flat_string_from_the_ISOMERIC_field_is_still_called_unspecified():
+    """The case that motivated the rule, measured live on 2026-07-29: `pinene` comes back from
+    PubChem's isomeric property as `CC1=C2CC(C2(C)C)CC1` — no stereocentres, because that CID has
+    no stereochemistry defined. Labelling it "isomeric" because of the field it arrived in would
+    claim the one thing a terpenoid chemist must not take on trust."""
+    from lit2db.structures import resolve_structure
+
+    def fake(url, timeout_s=20.0):
+        return {"PropertyTable": {"Properties": [{
+            "CID": 6654, "SMILES": "CC1=C2CC(C2(C)C)CC1", "InChIKey": "K" * 27,
+            "MolecularFormula": "C10H16"}]}}
+    out = resolve_structure("pinene", fetch=fake)
+    assert out["smiles"] == "CC1=C2CC(C2(C)C)CC1"
+    assert out["smiles_kind"] == "stereochemistry_unspecified"
+
+
+def test_a_connectivity_only_smiles_is_LABELLED_as_such():
+    """Falling back is right; presenting a flat structure as if it carried stereochemistry is
+    not. `smiles_kind` is what stops that being invisible."""
+    from lit2db.structures import resolve_structure
+
+    def fake(url, timeout_s=20.0):
+        return {"PropertyTable": {"Properties": [{
+            "CID": 1, "ConnectivitySMILES": "CCO", "InChIKey": "K" * 27,
+            "MolecularFormula": "C2H6O"}]}}
+    out = resolve_structure("ethanol", fetch=fake)
+    assert out["smiles"] == "CCO"
+    assert out["smiles_kind"] == "stereochemistry_unspecified"
+
+
+def test_isomeric_smiles_is_labelled_isomeric():
+    from lit2db.structures import resolve_structure
+
+    def fake(url, timeout_s=20.0):
+        return {"PropertyTable": {"Properties": [{
+            "CID": 1, "SMILES": "C[C@H](N)C(=O)O", "InChIKey": "K" * 27,
+            "MolecularFormula": "C3H7NO2"}]}}
+    out = resolve_structure("alanine", fetch=fake)
+    assert out["smiles_kind"] == "isomeric" and "@" in out["smiles"]
+
+
+def test_double_bond_geometry_alone_counts_as_stereochemistry():
+    """`/` and `\\` state E/Z geometry. A string carrying only those — no tetrahedral centre —
+    still says something about stereochemistry, and geraniol vs nerol is exactly that difference."""
+    from lit2db.structures import smiles_kind
+    assert smiles_kind("CC(C)=CCC/C(C)=C/CO") == "isomeric"
+    assert smiles_kind("CC(C)=CCCC(C)=CCO") == "stereochemistry_unspecified"
+    assert smiles_kind(None) is None

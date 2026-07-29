@@ -6,9 +6,18 @@ verified against the shipped package.
 
 ---
 
-## 0. Prerequisites (do this once, before the demo)
+## 0. Prerequisites — you can skip this section
 
-The plugin's MCP server and hooks run under whatever `python3` Claude Code finds on your PATH.
+**`/lit2db-start` checks the environment and repairs it for you.** It runs `scripts/doctor.py`
+before anything else, and if a dependency is missing it offers to install it, names the one
+thing it cannot do for you (restarting the session), and stops rather than dropping you into an
+interview that cannot finish. **The intended path is: install the plugin, run `/lit2db-start`,
+answer what it asks.** Nothing below is required reading.
+
+<details>
+<summary>What it is checking, and how to do it by hand</summary>
+
+The plugin's MCP server and hooks run under whatever `python3` Claude Code launches them with.
 That interpreter needs two packages:
 
 ```bash
@@ -16,13 +25,23 @@ python3 --version          # need 3.10+ (tested on 3.13)
 python3 -m pip install "pydantic>=2" "mcp>=1.0"
 ```
 
-**Why this matters:** the MCP server (`mcp`) and the contracts (`pydantic`) import these at
-boot. If they're missing, the server fails to start and the `/lit2db-*` tools won't appear. This
-is the single most likely thing to trip a live demo — install them first and confirm:
+**Why this used to be the top of the page:** the MCP server (`mcp`) and the contracts
+(`pydantic`) import these at boot. If they're missing the server fails to start and the
+`mcp__plugin_lit2db_lit2db__*` tools simply are not there — **no error, no traceback, nothing
+naming the cause.** It was the single most likely thing to trip a live demo, and it tripped it
+silently, which is why the fix was to make the front door own it rather than to write a bigger
+warning here.
+
+Diagnose at any time:
 
 ```bash
-python3 -c "import mcp, pydantic; print('deps ok', pydantic.VERSION)"
+python3 scripts/doctor.py            # human-readable, exits nonzero if broken
+python3 scripts/doctor.py --json     # what /lit2db-start reads
 ```
+
+It reports the remedy against **the interpreter Claude Code is actually using**, which matters:
+a bare `pip install` may install into a different Python and leave the server just as blind.
+</details>
 
 You also need Claude Code itself (Node.js-based; install per the official docs at
 https://docs.claude.com/en/docs/claude-code/overview). Confirm plugin support:

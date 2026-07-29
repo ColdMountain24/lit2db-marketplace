@@ -6,6 +6,38 @@ argument-hint: [what you are collecting, in your own words]
 The front door. **Assume the researcher knows their field and nothing about this tool.** They
 should never see the word "schema", "ledger", "adapter" or "unit of analysis" unless they ask.
 
+## 0 — Clear the environment yourself, before they see anything
+
+**Run this first, every time, before printing anything:**
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doctor.py --json
+```
+
+The plugin's MCP server imports `pydantic` and `mcp` at boot. If either is missing the server
+never starts and its tools are simply absent — no error, no traceback, nothing naming the cause.
+A researcher cannot diagnose that, and should not have to. **This command is the front door, so
+it owns the problem.**
+
+Act on `remedy`:
+
+| `remedy` | what you do |
+|---|---|
+| `none` | say nothing about it and go to step 1 |
+| `install_deps` | **offer to run the `fix` command for them**, in one sentence, in plain language: *"One-time setup: I need to install two Python packages first. Shall I?"* Run it on yes. Then step 3 below. |
+| `upgrade_python` | you cannot fix this. Say which Python Claude Code is using and what version is needed, and stop. |
+| `reinstall_plugin` | tell them to re-run `/plugin install lit2db@lit2db-marketplace`, and stop. |
+
+**If `restart_required` is true, say this and stop — do not continue into the interview.**
+Installing the packages does not start a server that already failed to boot, and
+`/reload-plugins` does not restart it either; it refreshes commands, hooks and agents only.
+Tell them to quit Claude Code, start a new session, and run `/lit2db-start` again. Say it is a
+one-time cost, because it is.
+
+**Never make the researcher read the diagnosis.** They asked to build a database. Repair what
+can be repaired, state plainly what cannot, and never print a checklist at someone who did not
+ask for one.
+
 ## 1 — Show them where they are
 
 Print this, exactly, before anything else:
