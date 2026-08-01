@@ -346,8 +346,14 @@ def record_view(db_path: str, sources_root, record_id: str, source_id: str,
     """One candidate, its paper, and whether it can honestly be ruled on.
 
     `verdicts_allowed` is the load-bearing key. A record is confirmable or deniable ONLY when
-    every one of its fields anchors exactly — that is, only when the reviewer is looking at the
-    evidence. Anything else offers `cant_tell` alone.
+    every field that CLAIMS TO QUOTE THE PAPER anchors exactly — that is, only when the reviewer
+    is looking at the evidence. Anything else offers `cant_tell` alone.
+
+    The one exception, ratified as D-121: a field resolved from a public authority carries no
+    verbatim quote by design (D-084), so its empty quote is not missing evidence and does not
+    block a verdict. It is still shown, flagged `resolved_not_quoted`, so the reviewer can see it
+    came from a lookup rather than from the paper. See the comment on that flag below for why the
+    exception is drawn on `provenance.kind` and not on which fields happen to be structural.
 
     That rule is computed HERE rather than in a browser so the server can enforce it on the way
     in as well as on the way out. A disabled button is a suggestion to the person at the
@@ -375,7 +381,22 @@ def record_view(db_path: str, sources_root, record_id: str, source_id: str,
             a = {**a, "explain": (f"There is no stored text for {source_id} under "
                                   f"{sources_root}. The paper this record came from was never "
                                   f"built into a store.")}
-        if _SEVERITY[a["state"]] > _SEVERITY[worst]:
+        # D-121: a value RESOLVED FROM A PUBLIC AUTHORITY has no verbatim quote by construction,
+        # and its absence is not missing evidence. D-084 removed the hallucination hazard by
+        # having the extractor emit a compound NAME and an authority resolve the structure — so
+        # `inchikey`, `molecular_formula`, `exact_mass` and friends were never in the paper to
+        # quote. Counting them as unanchored made the records with the BEST provenance the only
+        # ones a reviewer was forbidden to rule on: measured on the landed terpenoid wave, 116 of
+        # 220 offered `cant_tell` alone, and in all 116 every unanchored field was one of these.
+        # Whether a PubChem InChIKey is correct is a question about PubChem; the reviewer is being
+        # asked whether this PAPER reports this compound. `kind` already carries the distinction
+        # ('literature' vs 'structured'), so nothing new has to be recorded to tell them apart.
+        # NOTE this widens when `right`/`wrong` may be given, so it is deliberately narrow: it
+        # applies ONLY to a field that is `structured` AND carries no quote at all. A structured
+        # field that DOES quote the paper still has to anchor, and a `literature` field with an
+        # empty quote is still missing evidence.
+        resolved_not_quoted = str(prov.get("kind") or "") == "structured" and not quote.strip()
+        if not resolved_not_quoted and _SEVERITY[a["state"]] > _SEVERITY[worst]:
             worst = a["state"]
         first = next((s for s in a["spans"] if s.get("start") is not None), None)
         fields.append({
@@ -384,6 +405,11 @@ def record_view(db_path: str, sources_root, record_id: str, source_id: str,
             "quote": quote,
             "char_offset": off,
             "anchor": a,
+            # So the page can say where the value came from instead of showing a reviewer an
+            # empty quote box and leaving them to guess. Never inferred from the field NAME —
+            # a domain-blind module does not know that `inchikey` means a structure.
+            "resolved_not_quoted": resolved_not_quoted,
+            "provenance_kind": prov.get("kind"),
             "section": (section_of(store, first["start"])
                         if store and first and store.get("sections") else prov.get("section")),
             "is_inferential": bool(fv.get("is_inferential")),
@@ -396,7 +422,11 @@ def record_view(db_path: str, sources_root, record_id: str, source_id: str,
     if not fields:
         blocked = "This record carries no fields, so there is nothing to show you."
     elif not ok:
-        bad = next(f for f in fields if f["anchor"]["state"] != ANCHOR_EXACT)
+        # Must skip the resolved-not-quoted fields for the same reason they no longer set `worst`:
+        # naming one as the thing standing in the reviewer's way would explain the refusal with a
+        # field that is not causing it.
+        bad = next(f for f in fields
+                   if f["anchor"]["state"] != ANCHOR_EXACT and not f["resolved_not_quoted"])
         blocked = f"{bad['field_name']}: {bad['anchor']['explain']}"
 
     meta = (store or {}).get("meta") or {}

@@ -1,6 +1,34 @@
 # Changelog
 
 ## Unreleased
+The review queue is ordered by root cause, and an authority-resolved value stops blocking a verdict.
+
+Both found by preparing a real adjudication sitting rather than by running one, and both are
+failures of the *review surface* — neither can change what the gate writes.
+
+- **D-122 · ordered by root cause, not by confidence.** `review_queue(order="by_root_cause")`
+  groups by the root cause `gate.diagnose()` already computes and puts the fewest-open-questions
+  records first; `scripts/review_ui.py` defaults to it. The shipped `best_first` order rests on
+  "the near-misses are where a minute of attention converts into a row" — but **at k=1 the
+  composite IS the grounding score**, so on a real 220-record pool it took two values (119 at
+  1.000, 101 at 0.000) and there were no near-misses to rank. The first grounding-0.0 record sat
+  at rank 120, so the default `limit=100` showed a reviewer **none** of the largest class, silently.
+  The limit is applied after the sort — truncating in SQL first reproduces the bug one layer down,
+  and a test reintroduces exactly that. `root_cause` is reported only in this order, because
+  computing it needs a payload the default path deliberately does not read; emitting it anyway
+  would let one record describe itself differently depending on how the queue was sorted.
+- **D-121 · a value resolved from a public authority is not missing evidence.** D-084 has the
+  extractor emit a compound NAME and an authority resolve the structure, so `inchikey`, `inchi`,
+  `molecular_formula`, `molecular_weight`, `exact_mass` and `authority_compound_id` carry no
+  verbatim quote by construction. `record_view` was counting that as unanchored: **116 of 220
+  records offered `cant_tell` alone, and in all 116 every unanchored field was one of those six** —
+  so the records with the best provenance were the only ones a reviewer was forbidden to rule on.
+  Drawn on `provenance.kind` (`literature` vs `structured`), never on the field name, and narrow:
+  `structured` **and** no quote at all. A `literature` field with an empty quote is still refused,
+  and a `structured` field that does quote the paper still has to anchor. Fields carry
+  `resolved_not_quoted` so the page can say the value came from a lookup.
+- `serve()` reads the new `order` key with `.get`, so a cfg built before it existed still serves.
+
 A verdict records which surface it was given on.
 
 Both review paths write the same `adjudications` table with the same three verdicts, so the

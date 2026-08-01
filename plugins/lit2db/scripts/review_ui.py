@@ -219,6 +219,9 @@ class _Handler(BaseHTTPRequestHandler):
     # -- the two reads
     def _queue(self) -> dict:
         q = review_queue(self.cfg["db"], limit=self.cfg["limit"],
+                         # `.get`, not `[...]`: `order` was added after `serve()` had callers,
+                         # and a new optional key must not be able to crash one that predates it.
+                         order=self.cfg.get("order", "by_root_cause"),
                          unadjudicated_only=not self.cfg["show_all"])
         return {**q, "sources": self.cfg["sources"], "db": self.cfg["db"],
                 "showing_all": self.cfg["show_all"]}
@@ -246,6 +249,15 @@ def main(argv=None) -> int:
     p.add_argument("--all", action="store_true",
                    help="include records you have already ruled on")
     p.add_argument("--demo", action="store_true", help="always build the throwaway demo")
+    # ROOT-CAUSE ORDER BY DEFAULT HERE, unlike the library default. This surface exists to ask
+    # a human WHY a record stopped short, and `best_first` cannot rank that when the composite is
+    # not graded: measured on the landed terpenoid wave, at k=1 the composite has two values, so
+    # the shipped default put all 101 "the value is not in its quote" records after rank 119 and
+    # the default limit of 100 showed the reviewer none of them. `--order best_first` restores the
+    # old behaviour. Presentation only — this page cannot write a record under any ordering.
+    p.add_argument("--order", default="by_root_cause",
+                   choices=["by_root_cause", "best_first", "worst_first"],
+                   help="which candidates to put in front of the reviewer first")
     p.add_argument("--adjudicator", default="researcher")
     p.add_argument("--no-browser", action="store_true")
     p.add_argument("--verbose", action="store_true")
@@ -263,6 +275,7 @@ def main(argv=None) -> int:
               f"'can't tell', which is the point.")
 
     cfg = {"db": db, "sources": sources, "limit": a.limit, "show_all": a.all,
+           "order": a.order,
            "adjudicator": a.adjudicator, "autoaccept": resolve_threshold(env=os.environ),
            "verbose": a.verbose}
 
@@ -273,9 +286,18 @@ def main(argv=None) -> int:
         return 1
 
     url = f"http://127.0.0.1:{httpd.server_address[1]}"
-    n = review_queue(db, limit=a.limit, unadjudicated_only=not a.all)
+    n = review_queue(db, limit=a.limit, order=a.order, unadjudicated_only=not a.all)
     print(f"\n{n['n']} candidate(s) waiting · {n['adjudicated_total']} already ruled on · "
           f"{n['ml_ready_total']} confirmed rows in the database")
+    # What the run tripped over, collapsed. Printed because a reviewer deciding how to spend an
+    # afternoon needs the shape of the pool before the first record, and `reasons` alone reads as
+    # five findings per record when `diagnose` says it is usually one wearing several hats.
+    classes: dict = {}
+    for c in n["queue"]:
+        if c.get("root_cause_class"):
+            classes[c["root_cause_class"]] = classes.get(c["root_cause_class"], 0) + 1
+    for label, count in sorted(classes.items(), key=lambda kv: -kv[1]):
+        print(f"    {count:4d}  {label}")
     print(f"papers: {sources}\ndatabase: {db}\n\n  {url}\n\nCtrl-C to stop.")
 
     if not a.no_browser:

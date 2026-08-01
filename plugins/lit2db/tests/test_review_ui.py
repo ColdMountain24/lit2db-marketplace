@@ -558,3 +558,75 @@ def test_the_page_loads_nothing_from_a_network():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_a_cfg_without_the_order_key_still_serves(tmp_path):
+    """`order` was added to cfg after `serve()` already had callers. A new optional key that
+    KeyErrors inside the request handler takes the whole page down for anyone constructing cfg
+    the old way — and the failure surfaces as a dropped connection, not as a missing setting."""
+    db = str(tmp_path / "o.db")
+    sources, text = _store(tmp_path)
+    quote = "The Michaelis constant Km was 4.2 uM at pH 7.4."
+    _candidate(db, quote=quote, offset=text.index(quote))
+    s = _serving(db, sources)
+    assert "order" not in s.cfg
+    with s as base:
+        out = _get(base, "/api/queue")
+    assert out["n"] == 1
+
+
+# --- D-121: a value resolved from a public authority is not missing evidence -------------
+def _candidate_with_resolved_structure(db, quote, offset):
+    """One field quoting the paper, one resolved from an authority with no quote at all —
+    the shape D-084 produces for every compound whose name PubChem could resolve."""
+    from lit2db.output import record_candidate
+    rec = {"record_id": "r1", "entity_type": "compound", "judge_verdict": "supported",
+           "fields": [
+               {"field_name": "compound_name", "value": "merochlorin F", "route": "human_review",
+                "confidence_components": {"c_grounded": 0.0},
+                "provenance": {"source_id": "PMC1", "source_status": "active",
+                               "kind": "literature", "verbatim_quote": quote,
+                               "char_offset": offset}},
+               {"field_name": "inchikey", "value": "ABCDEFGHIJKLMN-UVWXYZ", "route": None,
+                "provenance": {"source_id": "PMC1", "source_status": "active",
+                               "kind": "structured", "verbatim_quote": None,
+                               "char_offset": None}}]}
+    gate = {"decision": "deny", "reasons": ["field 'compound_name' routed human_review"]}
+    record_candidate(rec, 0.0, gate, db, source_id="PMC1")
+
+
+def test_an_authority_resolved_field_does_not_block_a_verdict(tmp_path):
+    """Measured on the landed terpenoid wave: 116 of 220 records offered `cant_tell` alone, and in
+    ALL 116 every unanchored field was authority-resolved. The records with the best provenance
+    were the only ones a reviewer could not rule on. Whether an InChIKey is right is a question
+    about PubChem; the reviewer is being asked whether this PAPER reports this compound."""
+    from lit2db.review import record_view
+    db = str(tmp_path / "o.db")
+    sources, text = _store(tmp_path)
+    quote = "The Michaelis constant Km was 4.2 uM at pH 7.4."
+    _candidate_with_resolved_structure(db, quote, text.index(quote))
+    v = record_view(db, sources, "r1", "PMC1")
+    assert v["verdicts_allowed"] == ["right", "wrong", "cant_tell"]
+    assert v["blocked_because"] is None
+    assert v["evidence_state"] == "exact"
+    flags = {f["field_name"]: f["resolved_not_quoted"] for f in v["fields"]}
+    assert flags == {"compound_name": False, "inchikey": True}, \
+        "the page must still be able to SAY the structure came from a lookup"
+
+
+def test_a_literature_field_with_no_quote_is_still_missing_evidence(tmp_path):
+    """The exception is drawn on `provenance.kind`, not on emptiness. A field claiming to come
+    from the paper and offering no sentence is exactly the case the refusal exists for."""
+    from lit2db.output import record_candidate
+    from lit2db.review import record_view
+    db = str(tmp_path / "o.db")
+    sources, _ = _store(tmp_path)
+    rec = {"record_id": "r1", "entity_type": "compound", "judge_verdict": "supported",
+           "fields": [{"field_name": "compound_name", "value": "x",
+                       "provenance": {"source_id": "PMC1", "source_status": "active",
+                                      "kind": "literature", "verbatim_quote": None,
+                                      "char_offset": None}}]}
+    record_candidate(rec, 0.0, {"decision": "deny", "reasons": ["r"]}, db, source_id="PMC1")
+    v = record_view(db, sources, "r1", "PMC1")
+    assert v["verdicts_allowed"] == ["cant_tell"]
+    assert "compound_name" in (v["blocked_because"] or "")

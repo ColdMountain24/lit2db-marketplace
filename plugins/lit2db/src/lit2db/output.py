@@ -353,6 +353,39 @@ def _populated_names(payload: dict) -> list:
     return populated_fields(payload if isinstance(payload, dict) else {})
 
 
+# The order a reviewer's attention should walk the pool in, when the composite cannot rank it.
+# Fewest-questions-first WITHIN a family, families in this order. Rationale per family:
+#   0. The value is not in the quote it cited. One yes/no separates "the extractor invented this"
+#      from "the compound is really there and the citation is wrong" — two failures with opposite
+#      fixes that the score reports identically. Highest information per minute, and on the
+#      terpenoid wave the largest class (101 of 220, 70 of them with nothing else wrong).
+#   1./2. Counter-evidence in the same paper, and a judge veto. Real chemistry disagreements that
+#      only a domain expert can settle — but they say nothing about where the bar belongs.
+#   3. The extractor asked for a human itself (review-only). Working as ratified, not a defect.
+#   4./5./6. Sparseness, the bar, and an unrun judge are properties of the RUN, not of the record.
+#      A reviewer cannot rule on them one at a time; they are one spec question each.
+_ROOT_CAUSE_FAMILIES = (
+    ("grounding returned 0.0", "the value is not in the quote it cited"),
+    ("contradicted by its own source", "counter-evidence found in the same paper"),
+    ("struck out by the adversarial judge", "the adversarial judge struck it out"),
+    ("routed human_review", "the extractor asked for a human"),
+    ("record populates", "too few fields populated"),
+    ("< auto-accept", "below the accept bar"),
+    ("never challenged", "the adversarial judge never ran"),
+)
+
+
+def _root_cause(reasons: list, record: dict) -> tuple:
+    """(rank, label, root, subsumed) for one denied candidate. Reader only — decides nothing."""
+    from .gate import diagnose
+    d = diagnose(reasons, record)
+    root = d.get("root") or ""
+    for i, (needle, label) in enumerate(_ROOT_CAUSE_FAMILIES):
+        if needle in root:
+            return i, label, root, len(d.get("derived") or [])
+    return len(_ROOT_CAUSE_FAMILIES), "other", root, len(d.get("derived") or [])
+
+
 def review_queue(db_path: str, source_id: str = "", limit: int = 100,
                  order: str = "best_first", unadjudicated_only: bool = False) -> dict:
     """The candidate pool — what a human would confirm, best-first.
@@ -361,17 +394,34 @@ def review_queue(db_path: str, source_id: str = "", limit: int = 100,
     researcher's attention converts into a row, and a queue sorted worst-first spends that
     attention on the records least likely to survive it.
 
+    **`order="by_root_cause"` exists because best-first silently degrades to useless when the
+    composite is not graded.** Measured on the landed terpenoid wave 2026-07-29: at k=1 the
+    composite IS the grounding score, so across 220 denials it takes exactly TWO values — 119 at
+    1.000 and 101 at 0.000, nothing between. Best-first therefore ranks by root cause by accident
+    and in the wrong direction: the first grounding-0.0 record sits at rank 120, so under the
+    default `limit=100` a reviewer is shown NONE of the largest and most diagnostic class. There
+    are no near-misses at k=1 for the ordering rationale to be about.
+
     Returns the denial reasons alongside each row, so a reviewer sees WHY it stopped short
-    without opening a run artifact.
+    without opening a run artifact. `root_cause` collapses those reasons the way `gate.diagnose`
+    does — 72% of denials fail for one reason wearing three hats — so a reviewer answers one
+    question per record instead of re-deriving which of five reasons is the real one.
 
     `unadjudicated_only` hides what a human has already ruled on. Without it a second sitting
     re-asks the same questions in the same order, which is how a review loop stops being used
     after the first session — and an unused review loop produces no calibration set at all.
     """
+    by_root = order == "by_root_cause"
     con = connect(db_path)
     try:
+        # `review.py` records a deliberate decision NOT to widen this return with `payload_json`,
+        # because the conversational loop does not want a large payload per row. Honoured: the
+        # payload is read ONLY in the order that cannot be computed without it (grounding lives in
+        # the fields), it is never returned, and the default path's cost is unchanged.
         sql = ("SELECT record_id, source_id, entity_type, composite_confidence, decision, "
-               "reasons_json, judge_verdict FROM candidates WHERE decision != 'allow'")
+               "reasons_json, judge_verdict"
+               + (", payload_json" if by_root else ", ''")
+               + " FROM candidates WHERE decision != 'allow'")
         args: list = []
         if unadjudicated_only:
             sql += (" AND NOT EXISTS (SELECT 1 FROM adjudications a "
@@ -380,19 +430,47 @@ def review_queue(db_path: str, source_id: str = "", limit: int = 100,
         if source_id:
             sql += " AND source_id = ?"
             args.append(source_id)
-        sql += (" ORDER BY composite_confidence DESC" if order == "best_first"
+        # Unchanged contract: only "best_first" means descending. `by_root_cause` re-sorts in
+        # Python below, so its SQL order is immaterial — but it must not silently redefine what
+        # every other value of `order` has always meant.
+        sql += (" ORDER BY composite_confidence DESC"
+                if order in ("best_first", "by_root_cause")
                 else " ORDER BY composite_confidence ASC")
-        sql += " LIMIT ?"
-        args.append(limit)
+        # The root-cause rank is not a column, so it cannot be a SQL ORDER BY. The LIMIT has to
+        # move to the Python side or it would truncate BEFORE the sort — which is the exact bug
+        # this order exists to fix, reintroduced one layer down.
+        if not by_root:
+            sql += " LIMIT ?"
+            args.append(limit)
         rows = con.execute(sql, args).fetchall()
         total = con.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
         accepted = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
         judged = con.execute("SELECT COUNT(*) FROM adjudications").fetchone()[0]
     finally:
         con.close()
-    return {"n": len(rows), "candidates_total": total, "ml_ready_total": accepted,
-            "adjudicated_total": judged,
-            "queue": [{"record_id": r[0], "source_id": r[1], "entity_type": r[2],
-                       "composite_confidence": r[3], "decision": r[4],
-                       "reasons": json.loads(r[5] or "[]"), "judge_verdict": r[6]}
-                      for r in rows]}
+    out = []
+    for r in rows:
+        reasons = json.loads(r[5] or "[]")
+        row = {"record_id": r[0], "source_id": r[1], "entity_type": r[2],
+               "composite_confidence": r[3], "decision": r[4],
+               "reasons": reasons, "judge_verdict": r[6]}
+        # The root cause is reported ONLY where the payload was read. Emitting it on the default
+        # path would compute it from an absent record, so grounding — the commonest root — would
+        # be invisible and the SAME record would report a different root depending on how the
+        # queue happened to be sorted. A field whose value depends on the sort order is worse
+        # than no field.
+        if by_root:
+            rank, label, root, subsumed = _root_cause(reasons, json.loads(r[7] or "{}"))
+            row.update({"root_cause": root or None, "root_cause_class": label,
+                        "reasons_subsumed_by_root": subsumed, "_rank": rank})
+        out.append(row)
+    if by_root:
+        # Fewest open questions first within a family: a record whose ONLY finding is the root is
+        # one question with one answer, and it is the one whose answer generalises.
+        out.sort(key=lambda c: (c["_rank"], len(c["reasons"]) - c["reasons_subsumed_by_root"],
+                                c["source_id"], c["record_id"]))
+        out = out[:limit]
+        for c in out:
+            c.pop("_rank", None)
+    return {"n": len(out), "candidates_total": total, "ml_ready_total": accepted,
+            "adjudicated_total": judged, "order": order, "queue": out}

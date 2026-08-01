@@ -190,3 +190,92 @@ def test_the_mcp_tools_are_wired_and_report_honestly(tmp_path):
     assert rep["overall"]["n_unverifiable"] == 1        # and counted
     assert json.dumps(rep)                              # MCP has to serialize it
     assert fn(S.calibration_report)(db_path=db, bucket_by="nonsense")["ok"] is False
+
+
+# --- 4. the queue ORDER must not hide the class the reviewer is there to rule on ---------
+def _grounding_zero_candidate(rid, source, field="compound_name"):
+    """A record whose value is not in its quote: grounding 0.0, so at k=1 the composite is 0.0
+    and the gate emits one failure wearing several hats."""
+    rec = {"record_id": rid, "entity_type": "t", "judge_verdict": "not_run",
+           "fields": [{"field_name": field, "value": "v", "route": "human_review",
+                       "confidence_components": {"c_grounded": 0.0},
+                       "provenance": {"source_id": source, "source_status": "active"}}]}
+    gate = {"decision": "deny",
+            "reasons": [f"composite 0.000 < auto-accept 0.95",
+                        f"field '{field}' routed human_review",
+                        "never challenged by the adversarial judge (not_run)"]}
+    return rec, gate
+
+
+def _clean_composite_candidate(rid, source):
+    """A record denied on an INDEPENDENT finding, whose composite is a perfect 1.000 — the
+    combination `best_first` sorts to the very front."""
+    rec = {"record_id": rid, "entity_type": "t", "judge_verdict": "supported",
+           "fields": [{"field_name": "f0", "value": "v", "route": "auto_accept",
+                       "confidence_components": {"c_grounded": 1.0},
+                       "provenance": {"source_id": source, "source_status": "active"}}]}
+    return rec, {"decision": "deny", "reasons": ["record populates 1 field(s) (f0) < the "
+                                                 "calibrated minimum 5"]}
+
+
+def test_best_first_HIDES_the_grounding_class_when_the_composite_is_binary(tmp_path):
+    """The measured pathology, in miniature (landed terpenoid wave, 2026-07-29).
+
+    At k=1 the composite IS the grounding score, so it takes two values and nothing between.
+    `best_first` then ranks by root cause by accident and in the wrong direction: every
+    perfect-composite record sorts ahead of every grounding-0.0 one, so a limit that does not
+    reach the whole pool shows the reviewer NONE of the largest, most diagnostic class.
+    """
+    db = str(tmp_path / "o.db")
+    for i in range(6):
+        rec, gate = _clean_composite_candidate(f"good{i}", "PMC1")
+        record_candidate(rec, 1.0, gate, db, source_id="PMC1")
+    for i in range(6):
+        rec, gate = _grounding_zero_candidate(f"zero{i}", "PMC1")
+        record_candidate(rec, 0.0, gate, db, source_id="PMC1")
+
+    hidden = review_queue(db, limit=6)                       # the shipped default order
+    assert {c["composite_confidence"] for c in hidden["queue"]} == {1.0}
+    assert not any(c["record_id"].startswith("zero") for c in hidden["queue"]), \
+        "best_first with a truncating limit must be shown to hide the grounding class"
+
+    surfaced = review_queue(db, limit=6, order="by_root_cause")
+    assert all(c["record_id"].startswith("zero") for c in surfaced["queue"])
+    assert all(c["root_cause_class"] == "the value is not in the quote it cited"
+               for c in surfaced["queue"])
+
+
+def test_by_root_cause_collapses_one_failure_wearing_three_hats(tmp_path):
+    """Three reasons, one question. The reviewer is asked whether the value is in the quote —
+    not to re-derive which of `composite`, `routed`, and `not_run` is the real finding."""
+    db = str(tmp_path / "o.db")
+    rec, gate = _grounding_zero_candidate("z", "PMC1")
+    record_candidate(rec, 0.0, gate, db, source_id="PMC1")
+    row = review_queue(db, order="by_root_cause")["queue"][0]
+    assert len(row["reasons"]) == 3
+    assert row["reasons_subsumed_by_root"] == 3, "all three follow from the grounding miss"
+    assert "does not appear in the quote" in row["root_cause"]
+
+
+def test_the_limit_is_applied_AFTER_the_root_cause_sort(tmp_path):
+    """The bug this order exists to fix, one layer down: truncating in SQL before the Python
+    sort would reproduce it exactly while appearing to be ordered correctly."""
+    db = str(tmp_path / "o.db")
+    for i in range(8):
+        rec, gate = _clean_composite_candidate(f"good{i}", "PMC1")
+        record_candidate(rec, 1.0, gate, db, source_id="PMC1")
+    rec, gate = _grounding_zero_candidate("zero0", "PMC1")
+    record_candidate(rec, 0.0, gate, db, source_id="PMC1")
+    q = review_queue(db, limit=1, order="by_root_cause")
+    assert q["n"] == 1 and q["queue"][0]["record_id"] == "zero0"
+
+
+def test_root_cause_is_absent_rather_than_wrong_on_the_default_path(tmp_path):
+    """`root_cause` needs the payload, which the default order deliberately does not read.
+    Reporting it anyway would make the SAME record describe itself differently depending on how
+    the queue was sorted."""
+    db = str(tmp_path / "o.db")
+    rec, gate = _grounding_zero_candidate("z", "PMC1")
+    record_candidate(rec, 0.0, gate, db, source_id="PMC1")
+    assert "root_cause" not in review_queue(db)["queue"][0]
+    assert "root_cause" in review_queue(db, order="by_root_cause")["queue"][0]
