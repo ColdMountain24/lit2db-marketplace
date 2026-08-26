@@ -14,6 +14,14 @@ Do this:
 3. Every proposed item enters the ratification ledger as `PROPOSED`. **Stop and wait for the
    researcher** to move each to ACCEPTED / ACCEPTED_WITH_EDIT / REJECTED. Do not freeze a
    schema until every field traces to a ratified item.
+4. Once they are ratified, launch the **schema-architect-agent** to run the eight-step Schema
+   Design Protocol over the ratified spec and freeze it: minimal-sufficient v0, a controlled
+   vocabulary and canonical unit bound to every field, enum-conditional unit rules, mandatory
+   provenance fields, the six-dimension evidence tier, and a versioned citable constant for any
+   derived threshold. It operationalizes what was ratified and adds nothing — a field it cannot
+   trace to an ACCEPTED ledger item is a build error, never a call it gets to make. In the
+   self-improve loop it is the same agent that versions a schema change; a frozen schema is
+   never mutated in place.
 
 ## Arriving from `/lit2db-start`
 

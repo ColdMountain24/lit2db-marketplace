@@ -16,10 +16,19 @@ across passes and merging would compare different entities to each other.
 
 ## 1 — Store
 
-`resolve_access` → `check_retraction` → fetch → `build_store`.
+Run the **`ingest-agent`** for the adapter work: discovery, parse to an offset-anchored store,
+and recording the copy's **version** in provenance — a number taken from a preprint is not the
+same claim as the published one, and only `publishedVersion` may auto-accept (D-026). It never
+writes to the DB.
 
-A retracted or superseded source stops here. If no legal open copy exists, add it to the
-manual-acquisition queue (`rank_manual_queue`) and stop — **never reach around a paywall.**
+**You call the three fail-closed tools it does not hold** and hand it each verdict:
+`resolve_access` → `check_retraction` → fetch → `build_store`, plus `rank_manual_queue` for
+whatever could not be reached. The split is deliberate — an agent free to assume "probably open"
+or "probably not retracted" is the one failure mode that produces a confident, well-formed,
+illegally-obtained or withdrawn source that nothing downstream can detect.
+
+A retracted or superseded source stops here. If no legal open copy exists, queue it and stop —
+**never reach around a paywall.**
 
 `build_store` writes `sources/<source_id>/full.txt`, which is the coordinate system: every
 offset from here on is an index into that exact file.
@@ -76,14 +85,32 @@ record out, so a record the score has already turned down cannot be changed by o
 record that survives selection, and a ratified random slice of those that did not — the second
 part is what keeps the veto's reject-side behaviour measurable, and it is not optional.
 
-## 5 — Route and gate
+## 5 — Resolve entities against the database
+
+Run the **`entity-resolver-agent`**. This is the point where a new source's records meet the
+records already written: `resolve_entities` groups them into canonical entities and surfaces
+cross-source conflicts deterministically, because grouping records by hand is how a linkage
+silently becomes a judgement.
+
+It **classifies** disagreement and never picks a winner. Two findings, routed differently:
+
+- **Legitimate heterogeneity** — different conditions or populations. Both records stand.
+- **True contradiction** — same conditions, different value. Goes to human review as a
+  pre-loaded pair.
+
+Canonical entity records sit *above* the per-source rows; each row keeps its own provenance.
+Running this before the gate is the blueprint's order and is deliberate — the sweep cannot move
+a confidence score, but a contradiction it finds is an input to routing, so it has to happen
+before the routing decision rather than after the write.
+
+## 6 — Route and gate
 
 `score_and_route(record, weights_key, ensemble_k, ensemble_min_agreeing)` then `gate_upsert`.
 
 Never hand-set a route or a confidence component. The gate is the only thing that decides,
 and it fails closed.
 
-## 6 — Report
+## 7 — Report
 
 State plainly:
 

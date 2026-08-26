@@ -172,7 +172,7 @@ python3 -m pip install "pytest>=7"
 python3 -m pytest -q
 ```
 
-Expect the suite to pass — **at least 744 tests** as of v0.51.0, with 2 skipped (network tests;
+Expect the suite to pass — **at least 773 tests** as of v0.52.0, with 2 skipped (network tests;
 `LIT2DB_NETWORK_TESTS=1` runs them). A number below that means you are on an older checkout.
 
 The two worth naming to a skeptic are `test_smoke.py` — the ratification-ledger invariant, i.e.
@@ -216,7 +216,7 @@ same verify → route → gate spine you just watched in the demo.
 ## What's real vs. what's stubbed (be honest with the room)
 
 - **Real today:** install path, all 22 MCP tools, the 3 hooks, the deterministic verify→route→gate
-  spine, the offline demo, the 744 tests, the elicitation interview, the review/calibration loop.
+  spine, the offline demo, the 773 tests, the elicitation interview, the review/calibration loop.
 - **Supplied by the orchestrator at runtime:** the *adversarial judge* verdict. The
   MCP server ships a naive lexical/numeric grounding baseline so it's self-contained and testable;
   the strict judge that produced the 39%-flagged pilot result runs in Claude Code itself and feeds

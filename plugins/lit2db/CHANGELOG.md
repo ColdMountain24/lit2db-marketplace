@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.53.0 — 2026-08-26
+Three shipped agents had no command that reached them. The checker that would have caught it
+did not exist, so it was built first — and it caught all three on its first run.
+
+- **Stage 5 was missing from `/lit2db-extract` entirely.** Its steps ran Store · passes · Merge ·
+  Verify · Route · Report; the blueprint's `[5] CROSS-SOURCE` was absent from the only command
+  that runs the spine end to end. `entity-resolver-agent` therefore had nothing to be named
+  inside. The step is now written — `resolve_entities` for canonical grouping, then the
+  consistency sweep that **classifies** disagreement (legitimate heterogeneity: both records
+  stand; true contradiction: a pre-loaded pair for human review) and never picks a winner.
+  Canonical records sit above the per-source rows, each keeping its own provenance. It runs
+  before the gate, per the blueprint's order: the sweep cannot move a confidence score, but a
+  contradiction it finds is an input to routing.
+- **`ingest-agent` is named in step 1**, keeping the split its own definition requires — the
+  agent discovers, parses to the offset-anchored store, and records the copy's *version* in
+  provenance; the orchestrator calls `resolve_access`, `check_retraction` and
+  `rank_manual_queue`, the three fail-closed tools the agent deliberately does not hold.
+- **`schema-architect-agent` freezes the schema** in `/lit2db-new-project`, a step that
+  previously named no agent to perform it.
+- **`dev/doc_truth.py` now derives component liveness**, not just stamped numbers: which agents a
+  command names, and hook files vs. registrations in both directions for the workbench *and* the
+  shipped plugin. Structural findings are a separate list from stamp findings, so `--fix` cannot
+  silence one. Whole-name matching, because a substring test reports `extractor` as reached on
+  the strength of `extractor-agent` — failing silently in the reassuring direction.
+- **Docs restamped** to 773 tests / 22 MCP tools. `INSTALL.md`'s "at least N tests as of vX" was
+  corrected by hand with its version: it is a floor, not a stamp, and restamping the number alone
+  would have made it false of the version it names.
+- Housekeeping note, recorded rather than fixed: the `Unreleased` section below covers 0.52.0's
+  work, and 0.49.0–0.51.0 were tagged without changelog entries. Not retroactively re-dated here.
+
 ## Unreleased
 The review queue is ordered by root cause, and an authority-resolved value stops blocking a verdict.
 
