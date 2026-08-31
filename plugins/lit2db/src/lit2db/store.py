@@ -31,6 +31,8 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Optional
 
+from .tables import tables_from_jats
+
 # Blocks that are handled explicitly rather than recursed into blindly.
 _SKIP = {"ref-list", "back-matter-refs"}
 _PARA_GAP = "\n\n"
@@ -139,9 +141,16 @@ def _emit(el, b: _Builder, depth: int = 0) -> None:
 def build_from_jats(xml: str | bytes, source_id: str, meta: Optional[dict] = None) -> dict:
     """Parse JATS full-text XML into an offset-anchored store.
 
-    Returns `{source_id, full_text, sections, meta, stats}`. Raises on unparseable XML rather
-    than returning an empty store — a source that silently yields no text would look, three
-    stages later, exactly like a paper that simply contained nothing extractable.
+    Returns `{source_id, full_text, sections, tables, meta, stats}`. Raises on unparseable XML
+    rather than returning an empty store — a source that silently yields no text would look,
+    three stages later, exactly like a paper that simply contained nothing extractable.
+
+    `tables` is a SIDECAR, not a second coordinate system. `full.txt` remains the sole offset
+    authority for quotes; the sidecar carries what the flat stream provably cannot — the grid,
+    the footnote definitions, and which cell each marker binds to. Measured 2026-08-30 on a
+    table whose footnotes were bound explicitly in markup: the stream fused the marker into
+    the value (`12.4a`) and dropped the footnote text entirely, so a censored `0.8` survived
+    while "below the limit of detection" did not. See `tables.py`.
     """
     root = _strip_namespaces(ET.fromstring(xml.encode() if isinstance(xml, str) else xml))
     b = _Builder()
@@ -171,6 +180,7 @@ def build_from_jats(xml: str | bytes, source_id: str, meta: Optional[dict] = Non
         "source_id": source_id,
         "full_text": b.text,
         "sections": b.sections,
+        "tables": tables_from_jats(root),
         "meta": {**dict(meta or {}), "source_text_scope": "full_text"},
         "stats": {"chars": len(b.text), "sections": len(b.sections),
                   "est_tokens": round(len(b.text) / 4)},
@@ -234,8 +244,9 @@ def store_dirname(source_id: str) -> str:
 def write_store(store: dict, root_dir: str | pathlib.Path) -> dict:
     """Write the store to `<root_dir>/<source_id>/` and return the paths.
 
-    Three files, because the extractor reaches them with Read/Grep/Glob rather than through
-    an API: `full.txt` (the offset authority), `sections.json`, `meta.json`.
+    Four files, because the extractor reaches them with Read/Grep/Glob rather than through
+    an API: `full.txt` (the offset authority), `sections.json`, `meta.json`, and `tables.json`
+    (the structure sidecar, written only when the source carried tables).
     """
     d = pathlib.Path(root_dir) / store_dirname(store["source_id"])
     d.mkdir(parents=True, exist_ok=True)
@@ -243,8 +254,12 @@ def write_store(store: dict, root_dir: str | pathlib.Path) -> dict:
     (d / "sections.json").write_text(json.dumps(store["sections"], indent=2))
     (d / "meta.json").write_text(json.dumps(
         {**store["meta"], "source_id": store["source_id"], **store["stats"]}, indent=2))
-    return {"dir": str(d), "full_text": str(d / "full.txt"),
-            "sections": str(d / "sections.json"), "meta": str(d / "meta.json")}
+    paths = {"dir": str(d), "full_text": str(d / "full.txt"),
+             "sections": str(d / "sections.json"), "meta": str(d / "meta.json")}
+    if store.get("tables"):
+        (d / "tables.json").write_text(json.dumps(store["tables"], indent=2))
+        paths["tables"] = str(d / "tables.json")
+    return paths
 
 
 def quote_at(store_or_text, start: int, end: int) -> str:
