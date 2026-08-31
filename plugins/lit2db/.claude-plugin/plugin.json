@@ -17,6 +17,6 @@
     "data-curation",
     "scientific-databases"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "mcpServers": "./mcp-config.json"
 }

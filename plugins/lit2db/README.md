@@ -192,8 +192,15 @@ and only then does ingestion begin.
 
 ## License
 
-MIT (see plugin manifest). The scaffold is domain-blind; domain substance and any redistributed
-source material are governed by your project's own instantiation and licensing choices.
+**AGPL-3.0-or-later** — see [`LICENSE`](LICENSE). Chosen so lit2db stays free: the network clause
+means anyone running a hosted service on top of this work has to share their changes back.
+
+**The honest limit.** Releases up to and including `v0.53.0` were published under MIT and cannot
+be recalled — anyone may continue to use those under MIT terms, including commercially. The AGPL
+covers this release and everything after it.
+
+The scaffold is domain-blind; any domain substance and redistributed source material are governed
+by your own project's licensing.
 
 ## A note on judge independence
 

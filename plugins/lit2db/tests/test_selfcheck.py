@@ -131,3 +131,50 @@ def test_a_broken_install_is_reported_not_ignored(tmp_path, missing):
     r = run([], root=root)
     assert r.returncode == 1
     assert missing in r.stderr or "no " in r.stderr
+
+
+# --- Licence parity ------------------------------------------------------------------
+# The licence now lives in FOUR declaring locations and nothing compared them. That is the
+# same defect the version numbers carried twice: `marketplace.json` sat at 0.22.0 against a
+# 0.46.0 plugin, and `pyproject.toml` sat at 0.5.0 for forty-three releases. Both were found
+# by a parity test, not by review — so the relicense to AGPL-3.0 (D-152) gets one before it
+# has a chance to drift, rather than after.
+
+LICENCE_SPDX = "AGPL-3.0-or-later"
+_AGPL_TITLE = "GNU AFFERO GENERAL PUBLIC LICENSE"
+
+
+def test_both_license_files_are_the_same_agpl_text():
+    """A plugin whose two LICENSE files disagree has no licence anyone can rely on."""
+    plugin_license = (ROOT / "LICENSE").read_text(encoding="utf-8")
+    repo_license = (ROOT.parents[1] / "LICENSE").read_text(encoding="utf-8")
+    assert _AGPL_TITLE in plugin_license, "the plugin's LICENSE is not the AGPL"
+    assert plugin_license == repo_license, (
+        "the marketplace LICENSE and the plugin LICENSE differ — an installer reads one "
+        "and a forker reads the other")
+
+
+def test_every_manifest_declares_the_same_licence():
+    """`plugin.json` is the licence of record the way it is the version of record."""
+    manifest = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+    assert manifest.get("license") == LICENCE_SPDX, (
+        f"plugin.json declares {manifest.get('license')!r}, expected {LICENCE_SPDX!r}")
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "GNU Affero General Public License v3 or later" in pyproject, (
+        "pyproject.toml no longer carries the AGPL classifier — it declared no licence at all "
+        "until the relicense, which is how a fourth location goes unnoticed")
+
+
+def test_no_document_still_advertises_the_old_mit_licence():
+    """Releases through v0.53.0 shipped MIT and cannot be recalled (D-161), so the READMEs
+    must SAY that — but neither may still present MIT as the current licence."""
+    for readme in (ROOT / "README.md", ROOT.parents[1] / "README.md"):
+        text = readme.read_text(encoding="utf-8")
+        section = text.split("## License", 1)
+        assert len(section) == 2, f"{readme.name} has no License section"
+        body = section[1].split("\n## ", 1)[0]
+        assert LICENCE_SPDX in body, f"{readme.name} does not name {LICENCE_SPDX}"
+        assert "cannot" in body and "MIT" in body, (
+            f"{readme.name} dropped the honest limit — the published MIT releases cannot be "
+            "recalled, and a licence section that implies otherwise overclaims")

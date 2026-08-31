@@ -11,6 +11,10 @@ name = "lit2db"
 version = "0.53.0"
 description = "Domain-agnostic literature/structured-data -> ML-ready database pipeline (reference scaffold + MCP spine)."
 requires-python = ">=3.10"
+# AGPL-3.0-or-later (D-152). Stated as a classifier rather than a PEP 639 SPDX string so it
+# is valid on every setuptools this package claims to build under; migrating to
+# `license = "AGPL-3.0-or-later"` needs setuptools>=77 and is a separate change.
+classifiers = ["License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)"]
 dependencies = ["pydantic>=2", "mcp>=1.0", "certifi>=2023"]
 
 [project.optional-dependencies]
