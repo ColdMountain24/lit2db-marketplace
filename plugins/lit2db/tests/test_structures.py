@@ -14,6 +14,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import pytest  # noqa: E402
+
 from lit2db.structures import resolve_structure, structure_fields  # noqa: E402
 
 # `SMILES` (isomeric), NOT `CanonicalSMILES`. This fixture carried the old property name and
@@ -199,3 +201,48 @@ def test_double_bond_geometry_alone_counts_as_stereochemistry():
     assert smiles_kind("CC(C)=CCC/C(C)=C/CO") == "isomeric"
     assert smiles_kind("CC(C)=CCCC(C)=CCO") == "stereochemistry_unspecified"
     assert smiles_kind(None) is None
+
+
+# --- C-PROV normalisation fields (D-192) ------------------------------------------------------
+# Adopts the one part of RAW v3's INV-8 this record was genuinely missing: WHICH authority
+# normalised the subject, and at what version. The record already carried the other four parts.
+
+from datetime import datetime, timezone  # noqa: E402
+
+from lit2db.contracts.provenance import LiteratureProvenance  # noqa: E402
+
+_PROV_BASE = dict(
+    source_id="PMC_test",
+    retrieval_timestamp=datetime(2026, 9, 4, tzinfo=timezone.utc),
+    producing_process="claude-sonnet-5@2026-09",
+    verbatim_quote="kcat = 12.4 s-1",
+    char_offset=42,
+)
+
+
+def test_a_record_without_normalisation_is_still_valid():
+    """Optional by design: every record written before 2026-09-04 stays valid. The field is a
+    strengthening, not a break."""
+    p = LiteratureProvenance(**_PROV_BASE)
+    assert p.ontology_id is None and p.ontology_version is None
+
+
+def test_a_normalised_record_carries_the_authority_and_its_version():
+    p = LiteratureProvenance(**_PROV_BASE, ontology_id="taxonomy:1423",
+                             ontology_version="bioregistry-2026-08")
+    assert p.ontology_id == "taxonomy:1423"
+    assert p.ontology_version == "bioregistry-2026-08"
+
+
+@pytest.mark.parametrize("half", [
+    {"ontology_id": "taxonomy:1423"},
+    {"ontology_version": "bioregistry-2026-08"},
+])
+def test_half_a_normalisation_is_refused(half):
+    """An id without its version reads as 'this was normalised' -- the claim a reader acts on --
+    while being impossible to re-resolve, because registries re-map. That is a provenance string
+    that looks precise and cannot be checked, which is the defect process_fingerprint's own
+    validator refuses one field up."""
+    with pytest.raises(Exception) as e:
+        LiteratureProvenance(**_PROV_BASE, **half)
+    assert "travel together" in str(e.value)

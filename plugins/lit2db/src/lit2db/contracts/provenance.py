@@ -127,6 +127,42 @@ class _ProvCommon(BaseModel):
     source_status_checked_at: Optional[datetime] = None
     confidence: Optional[float] = None
     confidence_components: Optional[ConfidenceComponents] = None
+    # --- the normalized identity this value's subject resolved to, and by what ------------
+    # Added 2026-09-04 (D-190/D-192), adopting the one part of RAW v3's INV-8 that this record
+    # was genuinely missing. C-PROV is five parts -- assertion, passage locator, char offsets,
+    # normalized ontology ID, extractor ID with versions -- and on inspection this record
+    # already carried four: `verbatim_quote` + `section` locate the passage, `char_offset`
+    # indexes into it, and `producing_process` IS the extractor and its version.
+    #
+    # What was missing is WHICH AUTHORITY normalised the subject and AT WHAT VERSION. lit2db
+    # already resolves entities through Bioregistry (D-135) and structures through PubChem
+    # (D-084) and then discards which registry answered -- so two records that resolved under
+    # different registry versions are indistinguishable afterwards, which is precisely the
+    # reproducibility claim the project makes about itself.
+    #
+    # Optional so every existing record stays valid; the validator below is what makes them
+    # honest rather than decorative.
+    ontology_id: Optional[str] = None        # e.g. "taxonomy:1423", a CURIE from the authority
+    ontology_version: Optional[str] = None   # the authority's own version/release, never a date
+
+    @model_validator(mode="after")
+    def _normalization_is_all_or_nothing(self):
+        """An ontology id without its version is worse than no ontology id at all.
+
+        A CURIE alone reads as "this was normalised", which is the claim a reader acts on --
+        but without the authority's version you cannot tell WHICH mapping produced it, and
+        registries re-map. A half-recorded normalisation is a provenance string that looks
+        precise and cannot be checked, which is the same defect `process_fingerprint`'s
+        validator exists to refuse one field up.
+        """
+        if (self.ontology_id is None) != (self.ontology_version is None):
+            missing = "ontology_version" if self.ontology_id else "ontology_id"
+            raise ValueError(
+                f"ontology_id and ontology_version travel together; {missing} is missing. "
+                "A normalized identifier whose authority version is unknown cannot be "
+                "re-resolved, so it records that normalisation happened without recording "
+                "what it meant.")
+        return self
 
     @field_validator("process_fingerprint")
     @classmethod
