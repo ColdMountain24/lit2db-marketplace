@@ -216,7 +216,7 @@ same verify → route → gate spine you just watched in the demo.
 ## What's real vs. what's stubbed (be honest with the room)
 
 - **Real today:** install path, all 22 MCP tools, the 3 hooks, the deterministic verify→route→gate
-  spine, the offline demo, the 797 tests, the elicitation interview, the review/calibration loop.
+  spine, the offline demo, the 808 tests, the elicitation interview, the review/calibration loop.
 - **Supplied by the orchestrator at runtime:** the *adversarial judge* verdict. The
   MCP server ships a naive lexical/numeric grounding baseline so it's self-contained and testable;
   the strict judge that produced the 39%-flagged pilot result runs in Claude Code itself and feeds

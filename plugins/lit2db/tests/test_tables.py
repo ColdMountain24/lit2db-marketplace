@@ -226,3 +226,77 @@ def test_a_separated_marker_on_an_integer_is_not_ambiguous():
     t = parse_tables(doc)[0]
     assert t.cell_at(0, 1).marker_source == "typographic"
     assert t.cell_at(0, 1).value_text == "12"
+
+
+# --- The pre-registered primary outcome (invariance-experiment.md §3) -------------------------
+# Fixed 2026-09-01 before any data was analysed. These tests exist so the definition cannot drift
+# between runs of the study -- an outcome that is re-typed each time it is computed is not
+# pre-registered, whatever a document says.
+
+from lit2db.tables import (  # noqa: E402
+    ambiguity_rate, footnote_resolution_rate, header_chain_coverage, typographic_share,
+)
+
+
+def test_a_paper_with_no_footnoted_table_is_None_and_never_zero():
+    """The distinction the whole outcome turns on. A paper that declared no footnotes has not
+    failed to bind them, and scoring an absent thing as failure is the denominator error that
+    made an earlier measurement in this project answer the wrong question (D-177)."""
+    doc = _doc("""<table-wrap id="TN"><table><tbody>
+      <tr><td>x</td><td>1.0</td></tr></tbody></table></table-wrap>""")
+    assert footnote_resolution_rate(parse_tables(doc)) is None
+
+
+def test_every_declared_footnote_reaching_a_cell_is_one():
+    t = parse_tables(MARKUP_BOUND)
+    assert footnote_resolution_rate(t) == 1.0
+
+
+def test_a_declared_footnote_reaching_no_cell_lowers_the_rate():
+    """Half the point of the measure: a table can declare a footnote that binds to nothing, and
+    that is the residue the invariance experiment is about."""
+    doc = _doc("""<table-wrap id="TH"><table><tbody>
+      <tr><td>x</td><td>12.4<sup><xref ref-type="table-fn" rid="F1">a</xref></sup></td></tr>
+      </tbody></table>
+      <table-wrap-foot>
+        <fn id="F1"><label>a</label><p>bound</p></fn>
+        <fn id="F2"><label>z</label><p>orphan — no cell references it</p></fn>
+      </table-wrap-foot></table-wrap>""")
+    assert footnote_resolution_rate(parse_tables(doc)) == 0.5
+
+
+def test_an_ambiguous_binding_does_NOT_count_as_resolved():
+    """`4a` may be a position label rather than the value 4 with footnote a (D-175). Counting an
+    unratified guess as a success would inflate exactly the number H1 turns on."""
+    doc = _doc("""<table-wrap id="TA2"><table>
+      <thead><tr><th>Pos</th></tr></thead>
+      <tbody><tr><td>4a</td></tr></tbody></table>
+      <table-wrap-foot><fn><label>a</label><p>Peaks overlap.</p></fn></table-wrap-foot></table-wrap>""")
+    t = parse_tables(doc)
+    assert t[0].cell_at(1, 0).marker_source == "ambiguous"
+    assert footnote_resolution_rate(t) == 0.0, "declared one, resolved none"
+
+
+def test_tables_with_no_footnotes_do_not_dilute_the_denominator():
+    """Only footnoted tables contribute. A paper with one bound footnote and nine plain tables
+    scores 1.0, not 0.1 -- the outcome is about footnotes, not about tables."""
+    plain = "".join(f"""<table-wrap id="P{i}"><table><tbody>
+        <tr><td>a</td><td>{i}</td></tr></tbody></table></table-wrap>""" for i in range(9))
+    doc = _doc(MARKUP_BOUND.split("<sec>")[1].split("</sec>")[0]
+               .replace("<title>Results</title>", "") + plain)
+    assert footnote_resolution_rate(parse_tables(doc)) == 1.0
+
+
+@pytest.mark.parametrize("fn,expected", [
+    (header_chain_coverage, 1.0),     # every body cell sits under a header in MARKUP_BOUND
+    (ambiguity_rate, 0.0),            # both markers are markup-declared
+    (typographic_share, 0.0),         # ...so none is typographic
+])
+def test_the_secondary_measures_are_computable_and_labelled_secondary(fn, expected):
+    assert fn(parse_tables(MARKUP_BOUND)) == expected
+
+
+@pytest.mark.parametrize("fn", [header_chain_coverage, ambiguity_rate, typographic_share])
+def test_every_secondary_is_None_rather_than_zero_when_it_has_no_denominator(fn):
+    doc = _doc("""<table-wrap id="TE"><table><tbody><tr><th>h</th></tr></tbody></table></table-wrap>""")
+    assert fn(parse_tables(doc)) is None

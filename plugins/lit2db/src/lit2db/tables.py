@@ -40,7 +40,9 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 import xml.etree.ElementTree as ET
 
-__all__ = ["Footnote", "Cell", "Table", "parse_tables", "tables_from_jats"]
+__all__ = ["Footnote", "Cell", "Table", "parse_tables", "tables_from_jats",
+           "footnote_resolution_rate", "header_chain_coverage",
+           "ambiguity_rate", "typographic_share"]
 
 # A trailing run of footnote markers on an otherwise numeric or textual cell. Deliberately
 # NOT used to find markers when markup already declares them -- markup wins every time, and
@@ -364,3 +366,75 @@ def _parse_one(wrap) -> Table:
 def tables_from_jats(xml) -> list[dict]:
     """Serializable form, for writing `tables.json` beside `full.txt`."""
     return [t.to_dict() for t in parse_tables(xml)]
+
+
+# --- The pre-registered primary outcome -------------------------------------------------------
+# Fixed on 2026-09-01 in `lit2db-workspace/design-docs/invariance-experiment.md` §3, BEFORE any
+# data was analysed, and not changed since. It lives here rather than in the analysis script
+# because it is domain-blind and because an outcome definition that ships beside the parser can be
+# tested; one that lives in a notebook is re-typed every time somebody re-runs the study.
+
+def footnote_resolution_rate(tables: list[Table]) -> Optional[float]:
+    """Of the footnotes a paper DECLARES, what fraction reach at least one cell?
+
+    `None` -- never `0.0` -- for a paper with no footnoted table. That distinction is the whole
+    reason this is a function rather than a division: a paper whose tables declare no footnotes has
+    not failed to bind them, it had none to bind, and scoring an absent thing as failure is exactly
+    the denominator error that made an earlier measurement in this project answer the wrong
+    question (D-177).
+
+    An AMBIGUOUS binding does not count as resolved. `footnotes_for` returns nothing for those by
+    construction (D-175), because `4a` may be a ring-fusion carbon rather than the value 4 carrying
+    footnote `a`, and counting an unratified guess as a success would inflate exactly the number
+    the invariance experiment turns on.
+    """
+    declared = resolved = 0
+    for t in tables:
+        if not t.footnotes:
+            continue
+        for fn in t.footnotes:
+            declared += 1
+            if any(fn in t.footnotes_for(c.row, c.col)
+                   for c in t.cells if c.marker_source != "none"):
+                resolved += 1
+    if declared == 0:
+        return None
+    return resolved / declared
+
+
+def header_chain_coverage(tables: list[Table]) -> Optional[float]:
+    """SECONDARY (§3). Fraction of non-header cells carrying a non-empty column-header chain.
+
+    Reported, never used to decide H1. Listing it as secondary in the pre-registration and then
+    deciding on it is how a null result becomes a finding.
+    """
+    total = covered = 0
+    for t in tables:
+        for c in t.cells:
+            if c.is_header or not c.text:
+                continue
+            total += 1
+            if t.column_headers(c.col):
+                covered += 1
+    return None if total == 0 else covered / total
+
+
+def ambiguity_rate(tables: list[Table]) -> Optional[float]:
+    """SECONDARY (§3). Of cells carrying any marker, the fraction classed ambiguous (D-175)."""
+    marked = [c for t in tables for c in t.cells if c.marker_source != "none"]
+    if not marked:
+        return None
+    return sum(1 for c in marked if c.marker_source == "ambiguous") / len(marked)
+
+
+def typographic_share(tables: list[Table]) -> Optional[float]:
+    """SECONDARY (§3). Of RESOLVED bindings, the fraction not declared in markup.
+
+    Ambiguous cells are excluded from both halves: they are not resolved bindings, so putting them
+    in the denominator would shrink a share whose numerator cannot contain them.
+    """
+    bound = [c for t in tables for c in t.cells
+             if c.marker_source in ("markup", "typographic")]
+    if not bound:
+        return None
+    return sum(1 for c in bound if c.marker_source == "typographic") / len(bound)
