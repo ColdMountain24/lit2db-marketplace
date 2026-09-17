@@ -42,7 +42,8 @@ import xml.etree.ElementTree as ET
 
 __all__ = ["Footnote", "Cell", "Table", "parse_tables", "tables_from_jats",
            "footnote_resolution_rate", "header_chain_coverage",
-           "ambiguity_rate", "typographic_share"]
+           "ambiguity_rate", "typographic_share", "recovered_label_share",
+           "split_label_share"]
 
 # A trailing run of footnote markers on an otherwise numeric or textual cell. Deliberately
 # NOT used to find markers when markup already declares them -- markup wins every time, and
@@ -67,10 +68,18 @@ class Footnote:
 
     `label` is the marker a reader looks for ("a", "*", "1"); `fn_id` is what the markup
     uses to point at it. Either can be absent in real papers, which is why both are kept.
+
+    `label_source` says where the marker came from: `markup` for a declared `<label>`, `text`
+    for one recovered from the footnote's own prose (see `_recover_labels`), `split` for one cut
+    out of a `<fn>` that carried several definitions (see `_split_crowded`), `none` for a
+    footnote that still has no marker. A recovered label binds like a declared one, so the
+    distinction has to survive into `tables.json` -- otherwise a number this parser inferred
+    is indistinguishable, downstream, from one the publisher tagged.
     """
     fn_id: Optional[str]
     label: Optional[str]
     text: str
+    label_source: str = "none"           # "markup" | "text" | "split" | "none"
 
 
 @dataclass
@@ -191,7 +200,8 @@ def _parse_footnotes(wrap) -> list[Footnote]:
             body = _flat(fn)
             if label and body.startswith(label):
                 body = body[len(label):].strip()
-        out.append(Footnote(fn_id=fn.get("id"), label=label, text=body))
+        out.append(Footnote(fn_id=fn.get("id"), label=label, text=body,
+                            label_source="markup" if label else "none"))
     return out
 
 
@@ -278,6 +288,221 @@ def _is_ambiguous_label_form(text: str, marker: str) -> bool:
     return bool(marker.isalpha() and _BARE_INTEGER.match(stem_raw.strip()))
 
 
+_LEADING_MARKER = re.compile(r"^([a-zA-Z]|[*†‡§¶#]{1,3}|\d{1,2})")
+
+
+def _leading_marker_candidate(text: str) -> Optional[str]:
+    """The marker a footnote's text appears to OPEN with, or None. Structural only.
+
+    A symbol run binds on sight; a letter or small integer counts only if the writer set it
+    off, so `a Mean of three replicates` proposes `a` while `Mean of three replicates`
+    proposes nothing -- `M` runs straight into `ean`.
+
+    Proposing is not accepting. `_recover_labels` still requires a value in the same table to
+    wear the marker, which is what keeps `A total of 12 isolates` from becoming footnote `A`.
+    """
+    m = _LEADING_MARKER.match(text)
+    if not m:
+        return None
+    marker = m.group(1)
+    rest = text[len(marker):]
+    if all(ch in _SYMBOL_MARKERS for ch in marker):
+        return marker
+    if not rest:
+        return None                        # a footnote that is ONLY a marker says nothing
+    return marker if (rest[0].isspace() or rest[0] in ").:;,") else None
+
+
+def _worn_markers(cells: list[Cell]) -> set[str]:
+    """The markers the VALUES carry -- the corroboration a recovered label has to find.
+
+    Both halves count: a marker a cell declares in its own markup, and a plausible trailing
+    one on its text. An AMBIGUOUS form (`4a`, D-175) corroborates nothing. If structure cannot
+    tell whether that is the value 4 carrying marker `a` or a label in its own right, it
+    cannot be the evidence that licenses a binding somewhere else.
+    """
+    worn: set[str] = set()
+    for c in cells:
+        if c.marker_source == "markup":
+            worn.update(l for l in c.footnote_labels if l)
+            continue
+        m = _TRAILING_MARKERS.search(c.text)
+        if (m and _plausible_typographic(c.text, m.group(1))
+                and not _is_ambiguous_label_form(c.text, m.group(1))):
+            worn.add(m.group(1))
+    return worn
+
+
+def _recover_labels(footnotes: list[Footnote], cells: list[Cell]) -> bool:
+    """Give an unlabelled footnote the marker its own text opens with, IF a value wears it.
+
+    21-29% of footnotes in PLOS, MDPI and PLoS One carry no `<label>` (D-194). The marker is
+    usually still there, sitting at the front of the footnote where a human reads it; only the
+    machine-readable tag is missing. Without it the footnote reaches no cell at all, which
+    means part of the publisher effect that measurement found is this parser rather than the
+    publishers -- and that is the thing the re-run has to separate.
+
+    The grid licenses the recovery and nothing else does. A candidate is accepted when some
+    value in the same table wears that exact marker; no other property of the footnote's prose
+    is trusted. Corroboration is what makes this safe to run on a corpus: the failure being
+    avoided is not a missed footnote, it is a marker invented onto a value that never had one.
+
+    A candidate colliding with another footnote's label is refused on BOTH sides. Two
+    footnotes claiming `a` means a cell wearing `a` has no single referent, and binding it to
+    whichever happened to parse first would be a coin toss recorded as a fact. Returns whether
+    anything was recovered.
+    """
+    unlabelled = [f for f in footnotes if not f.label]
+    if not unlabelled:
+        return False
+    worn = _worn_markers(cells)
+    if not worn:
+        return False
+    taken = {f.label for f in footnotes if f.label}
+    proposed: dict[str, list[Footnote]] = {}
+    for fn in unlabelled:
+        cand = _leading_marker_candidate(fn.text)
+        if cand and cand in worn and cand not in taken:
+            proposed.setdefault(cand, []).append(fn)
+
+    recovered = False
+    for cand, claimants in proposed.items():
+        if len(claimants) != 1:            # two footnotes, one marker: refuse both
+            continue
+        fn = claimants[0]
+        rest = fn.text[len(cand):]
+        if rest[:1] in (")", ".", ":", ";", ","):
+            rest = rest[1:]
+        fn.label = cand
+        fn.label_source = "text"
+        fn.text = rest.strip() or fn.text
+        recovered = True
+    return recovered
+
+
+_SYMBOL_SERIES = "*\u2020\u2021\u00a7\u00b6#"      # the conventional footnote order
+
+
+def _successor_markers(marker: str) -> list[str]:
+    """The markers that could open the NEXT definition in the same series.
+
+    Series, not "any marker-shaped token", is what makes interior detection specific: `1` licenses
+    looking for `2`, and nothing licenses looking for `7` in a footnote labelled `1`.
+    """
+    if not marker:
+        return []
+    if marker.isdigit():
+        return [str(int(marker) + 1)]
+    if len(marker) == 1 and marker.isalpha():
+        nxt = chr(ord(marker) + 1)
+        return [nxt] if nxt.isalpha() else []
+    if all(ch in _SYMBOL_MARKERS for ch in marker):
+        out = [marker[0] * (len(marker) + 1)]                  # * -> ** -> ***
+        i = _SYMBOL_SERIES.find(marker[0])
+        if i >= 0 and i + 1 < len(_SYMBOL_SERIES):
+            out.append(_SYMBOL_SERIES[i + 1])                  # * -> dagger
+        return out
+    return []
+
+
+def _definition_opener(marker: str) -> "re.Pattern":
+    """Where a definition for `marker` begins inside running text.
+
+    A LETTER or DIGIT needs a sentence boundary in front of it: `etc. 2 Immunosuppressive treatment`
+    opens a second footnote and `heated to 2 degrees` does not, and only the boundary separates
+    them. A SYMBOL needs none -- it never occurs inside a word, the same reason
+    `_plausible_typographic` lets a symbol bind on sight. Requiring the boundary for symbols too
+    would miss `* Arm A vs. B vs. C ** Arm A vs. B`, where `**` follows a letter.
+    """
+    if all(ch in _SYMBOL_MARKERS for ch in marker):
+        return re.compile(r"(?:^|\s)" + re.escape(marker) + r"\s*(?=[A-Za-z])")
+    return re.compile(r"(?:^|(?<=[.;])\s)" + re.escape(marker) + r"\s*(?=[A-Za-z])")
+
+
+def _interior_definitions(label: str, text: str) -> list[tuple]:
+    """`(marker, start, end)` for each further definition this footnote's text appears to carry."""
+    found, cur, pos = [], label, 0
+    while cur:
+        best = None
+        for cand in _successor_markers(cur):
+            m = _definition_opener(cand).search(text, pos)
+            if m and (best is None or m.start() < best[1]):
+                best = (cand, m.start(), m.end())
+        if best is None:
+            break
+        found.append(best)
+        cur, pos = best[0], best[2]
+    return found
+
+
+def _split_crowded(footnotes: list[Footnote], cells: list[Cell]) -> bool:
+    """Break a single `<fn>` that carries SEVERAL definitions into one footnote per marker.
+
+    Publishers concatenate a whole table's notes into one element -- MDPI PMC10819282 Table 1 holds
+    six numbered notes plus `The asterisk (*) represents p < 0.05` -- and the parser kept only the
+    first. Everything after it was unreachable, so cells wearing `2`..`6` bound to nothing while
+    the paper had said in plain words what they meant. Measured across the 2026-09-04 corpus before
+    this was written: 24 of 2971 footnotes, 45 definitions lost, 114 of 234 orphan symbol markers
+    attributable to it rather than to the papers.
+
+    **A split is only taken where a value in the same table wears the marker** -- the identical
+    corroboration D-195 requires of a recovered label, and for the identical reason. Splitting
+    without it would put new labels into `known_labels`, and a new label is a new way for a cell
+    like `Group 2` to acquire a footnote it never had. Definitions nobody points at stay merged in
+    the preceding footnote's text: over-reaching text is a display problem, an invented binding is
+    a wrong value.
+    """
+    worn = _worn_markers(cells)
+    if not worn:
+        return False
+    taken = {f.label for f in footnotes if f.label}
+    added: list[Footnote] = []
+
+    # An UNLABELLED footnote has no series to walk, and 88 of the 98 orphan markers left after the
+    # series pass sat in exactly that shape: a general note whose prose defines `*` partway
+    # through, with no marker of its own to anchor on. Symbols only, and still only where a value
+    # wears the marker -- a letter or digit without a series behind it is indistinguishable from
+    # the sentence around it, which is the case this deliberately does not attempt.
+    for fn in footnotes:
+        if fn.label or not fn.text:
+            continue
+        hits = []
+        for sym in (_SYMBOL_SERIES[i] * n for i in range(len(_SYMBOL_SERIES)) for n in (1, 2, 3)):
+            if sym in taken or sym not in worn:
+                continue
+            m = _definition_opener(sym).search(fn.text)
+            if m:
+                hits.append((sym, m.start(), m.end()))
+        hits.sort(key=lambda h: h[1])
+        for i, (marker, start, end) in enumerate(hits):
+            stop = hits[i + 1][1] if i + 1 < len(hits) else len(fn.text)
+            body = fn.text[end:stop].strip()
+            if not body:
+                continue
+            added.append(Footnote(fn_id=None, label=marker, text=body, label_source="split"))
+            taken.add(marker)
+        if hits:
+            fn.text = fn.text[:hits[0][1]].strip() or fn.text
+
+    for fn in footnotes:
+        if not fn.label or not fn.text:
+            continue
+        cuts = [(m, a, b) for m, a, b in _interior_definitions(fn.label, fn.text)
+                if m in worn and m not in taken]
+        if not cuts:
+            continue
+        for i, (marker, start, end) in enumerate(cuts):
+            stop = cuts[i + 1][1] if i + 1 < len(cuts) else len(fn.text)
+            body = fn.text[end:stop].strip()
+            if not body:
+                continue
+            added.append(Footnote(fn_id=None, label=marker, text=body, label_source="split"))
+            taken.add(marker)
+        fn.text = fn.text[:cuts[0][1]].strip() or fn.text
+    footnotes.extend(added)
+    return bool(added)
+
+
 def _strip_trailing_markers(text: str, labels: list[str]) -> str:
     """Remove the marker from the token an extractor will parse.
 
@@ -310,8 +535,35 @@ def _parse_one(wrap) -> Table:
     label_el = next((c for c in wrap if _tag(c) == "label"), None)
     caption_el = next((c for c in wrap if _tag(c) == "caption"), None)
     footnotes = _parse_footnotes(wrap)
-    known_labels = [f.label for f in footnotes if f.label]
 
+    # Two passes, because the two halves license each other. A cell's trailing marker is only
+    # read when the table declares that label (`known_labels`), and an undeclared label is only
+    # recovered when a cell wears it -- so the first pass has to run on the declared labels
+    # alone, and anything recovered from it makes a second pass necessary. Without the rebuild a
+    # recovered footnote would hold a marker that no cell had been allowed to match.
+    known_labels = [f.label for f in footnotes if f.label]
+    cells = _build_cells(wrap, known_labels)
+    changed = _recover_labels(footnotes, cells)
+    # Splitting runs AFTER recovery and against the same cells: a crowded `<fn>` usually has no
+    # `<label>` either, so its own marker is not known until recovery has supplied it.
+    changed = _split_crowded(footnotes, cells) or changed
+    if changed:
+        cells = _build_cells(wrap, [f.label for f in footnotes if f.label])
+
+    n_rows = (max((c.row for c in cells), default=-1)) + 1
+    n_cols = (max((c.col + c.spans[1] for c in cells), default=0))
+    return Table(table_id=wrap.get("id"),
+                 label=_flat(label_el) if label_el is not None else "",
+                 caption=_flat(caption_el) if caption_el is not None else "",
+                 cells=cells, footnotes=footnotes, n_rows=n_rows, n_cols=n_cols)
+
+
+def _build_cells(wrap, known_labels: list[str]) -> list[Cell]:
+    """The grid, read against a given set of footnote labels.
+
+    Takes the labels rather than reading them off the footnotes so it can be run twice: once on
+    what the markup declared, once on that plus whatever `_recover_labels` recovered.
+    """
     cells: list[Cell] = []
     occupied: dict[tuple[int, int], bool] = {}
     row_i = -1
@@ -354,13 +606,7 @@ def _parse_one(wrap) -> Table:
                               footnote_labels=labels, marker_source=source,
                               spans=(rowspan, colspan)))
             col_i += colspan
-
-    n_rows = (max((c.row for c in cells), default=-1)) + 1
-    n_cols = (max((c.col + c.spans[1] for c in cells), default=0))
-    return Table(table_id=wrap.get("id"),
-                 label=_flat(label_el) if label_el is not None else "",
-                 caption=_flat(caption_el) if caption_el is not None else "",
-                 cells=cells, footnotes=footnotes, n_rows=n_rows, n_cols=n_cols)
+    return cells
 
 
 def tables_from_jats(xml) -> list[dict]:
@@ -438,3 +684,34 @@ def typographic_share(tables: list[Table]) -> Optional[float]:
     if not bound:
         return None
     return sum(1 for c in bound if c.marker_source == "typographic") / len(bound)
+
+
+# --- Diagnostic, deliberately NOT pre-registered ----------------------------------------------
+# The primary and the three secondaries above are fixed by §3 and unchanged by label recovery:
+# recovery moves the PRIMARY'S NUMERATOR, by binding footnotes the paper always declared, and
+# never its denominator. This reports how much of that movement is recovery, so a re-run can
+# attribute the change rather than assert it -- which is the whole reason the rung exists.
+
+def recovered_label_share(tables: list[Table]) -> Optional[float]:
+    """Of the footnotes that have a marker at all, the fraction whose marker came from text.
+
+    `None` for a corpus whose footnotes are all unlabelled or absent, on the same reasoning as
+    `footnote_resolution_rate`: nothing was recovered because there was nothing to recover, and
+    that is not a rate of zero.
+    """
+    labelled = [f for t in tables for f in t.footnotes if f.label]
+    if not labelled:
+        return None
+    return sum(1 for f in labelled if f.label_source == "text") / len(labelled)
+
+
+def split_label_share(tables: list[Table]) -> Optional[float]:
+    """Diagnostic. Of the footnotes carrying a marker, the fraction that came out of a split `<fn>`.
+
+    Not pre-registered, and reported beside `recovered_label_share` for the same reason: a re-run
+    that moves has to be able to say which mechanism moved it.
+    """
+    labelled = [f for t in tables for f in t.footnotes if f.label]
+    if not labelled:
+        return None
+    return sum(1 for f in labelled if f.label_source == "split") / len(labelled)

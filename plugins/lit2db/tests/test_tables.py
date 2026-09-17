@@ -11,7 +11,7 @@ import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 from lit2db.store import build_from_jats
-from lit2db.tables import parse_tables
+from lit2db.tables import parse_tables, recovered_label_share, split_label_share
 
 
 def _doc(table_xml: str) -> str:
@@ -300,3 +300,202 @@ def test_the_secondary_measures_are_computable_and_labelled_secondary(fn, expect
 def test_every_secondary_is_None_rather_than_zero_when_it_has_no_denominator(fn):
     doc = _doc("""<table-wrap id="TE"><table><tbody><tr><th>h</th></tr></tbody></table></table-wrap>""")
     assert fn(parse_tables(doc)) is None
+
+
+# --- Recovering a marker the publisher never tagged --------------------------------------------
+# D-194 measured the hole first: 21–29% of footnotes in PLOS, MDPI and PLoS One carry no
+# `<label>`. The marker is still printed at the front of the footnote, where a human reads it;
+# only the machine-readable tag is missing, and without it the footnote reaches no cell at all.
+# Recovery is licensed by the grid and by nothing else — a value in the same table has to wear
+# the marker — because the failure being avoided is not a missed footnote, it is a marker
+# invented onto a value that never had one.
+
+RECOVERABLE = _doc("""<table-wrap id="T3"><label>Table 3</label>
+ <table><thead><tr><th>Variant</th><th>kcat (s-1)</th></tr></thead>
+ <tbody>
+  <tr><td>WT</td><td>12.4a</td></tr>
+  <tr><td>M1</td><td>0.8</td></tr>
+ </tbody></table>
+ <table-wrap-foot>
+  <fn id="TF9"><p>a Mean of three replicates.</p></fn>
+ </table-wrap-foot></table-wrap>""")
+
+# The cell is the letter A itself — a sample name, not a marked value. Nothing in this table
+# wears `A` as a marker, so the footnote's opening capital stays part of its sentence.
+UNCORROBORATED = _doc("""<table-wrap id="T4"><label>Table 4</label>
+ <table><thead><tr><th>Sample</th><th>Yield (mg/L)</th></tr></thead>
+ <tbody><tr><td>A</td><td>110</td></tr></tbody></table>
+ <table-wrap-foot>
+  <fn><p>A total of 12 isolates were screened.</p></fn>
+ </table-wrap-foot></table-wrap>""")
+
+
+def test_an_untagged_marker_is_recovered_when_a_value_wears_it():
+    t = parse_tables(RECOVERABLE)[0]
+    fn = t.footnotes[0]
+    assert fn.label == "a", "the marker was printed, just never tagged"
+    assert fn.label_source == "text", "and the record has to say we inferred it"
+    assert fn.text == "Mean of three replicates.", "the marker leaves the sentence with it"
+    assert [n.text for n in t.footnotes_for(1, 1)] == ["Mean of three replicates."]
+    assert t.cell_at(1, 1).value_text == "12.4", "the value is now clean of its marker too"
+
+
+def test_recovery_is_refused_when_no_value_wears_the_marker():
+    """The sentence that opens with a capital is the whole reason for the corroboration rule."""
+    t = parse_tables(UNCORROBORATED)[0]
+    fn = t.footnotes[0]
+    assert fn.label is None, "no cell wears `A`, so nothing licenses reading it as a marker"
+    assert fn.label_source == "none"
+    assert fn.text == "A total of 12 isolates were screened.", "the prose is left intact"
+    assert t.cell_at(1, 0).value_text == "A", "and the sample name keeps its name"
+
+
+def test_a_symbol_marker_is_recovered_the_same_way():
+    t = parse_tables(_doc("""<table-wrap id="T5"><table><tbody>
+      <tr><td>WT</td><td>12.4*</td></tr></tbody></table>
+     <table-wrap-foot><fn><p>*p &lt; 0.05 versus wild type.</p></fn>
+     </table-wrap-foot></table-wrap>"""))[0]
+    fn = t.footnotes[0]
+    assert (fn.label, fn.label_source) == ("*", "text")
+    assert fn.text == "p < 0.05 versus wild type."
+    assert [n.text for n in t.footnotes_for(0, 1)] == ["p < 0.05 versus wild type."]
+
+
+def test_two_footnotes_claiming_one_marker_are_both_refused():
+    """A cell wearing `a` would have no single referent, and picking one would be a coin toss."""
+    t = parse_tables(_doc("""<table-wrap id="T6"><table><tbody>
+      <tr><td>WT</td><td>12.4a</td></tr></tbody></table>
+     <table-wrap-foot>
+      <fn><p>a Mean of three replicates.</p></fn>
+      <fn><p>a Assayed at 30 °C.</p></fn>
+     </table-wrap-foot></table-wrap>"""))[0]
+    assert [f.label for f in t.footnotes] == [None, None]
+    assert t.footnotes_for(0, 1) == []
+
+
+def test_an_ambiguous_cell_corroborates_nothing():
+    """`4a` may be a ring-fusion carbon rather than the value 4 with marker `a` (D-175).
+
+    If structure cannot tell what the cell is, the cell cannot be the evidence that licenses a
+    binding — otherwise the ambiguity we refuse to resolve in one place reappears as a fact in
+    another.
+    """
+    t = parse_tables(_doc("""<table-wrap id="T7"><table>
+     <thead><tr><th>Pos</th><th>ROESY</th></tr></thead>
+     <tbody><tr><td>1</td><td>4a</td></tr></tbody></table>
+     <table-wrap-foot><fn><p>a Ring fusion carbon.</p></fn>
+     </table-wrap-foot></table-wrap>"""))[0]
+    assert t.footnotes[0].label is None
+    assert t.footnotes[0].label_source == "none"
+
+
+def test_a_declared_label_is_still_recorded_as_declared():
+    for fn in parse_tables(MARKUP_BOUND)[0].footnotes:
+        assert fn.label_source == "markup", "recovery must not blur what the publisher tagged"
+
+
+def test_the_share_of_recovered_labels_is_reportable_and_absent_when_there_is_nothing():
+    assert recovered_label_share(parse_tables(RECOVERABLE)) == 1.0
+    assert recovered_label_share(parse_tables(MARKUP_BOUND)) == 0.0
+    assert recovered_label_share(parse_tables(UNCORROBORATED)) is None, (
+        "no footnote carries a marker at all — that is not a recovery rate of zero")
+
+
+# --- One `<fn>` carrying several definitions ---------------------------------------------------
+# Publishers concatenate a whole table's notes into a single element. The parser kept the first and
+# everything after it was unreachable, so cells wearing the later markers bound to nothing while the
+# paper had said in plain words what they meant. Measured before the fix over the 2026-09-04 corpus:
+# 24 of 2971 footnotes, 45 definitions lost, 114 of 234 orphan symbol markers ours rather than the
+# papers'. A split is taken only where a value wears the marker — D-195's corroboration, unchanged.
+
+CROWDED_NUMBERED = _doc("""<table-wrap id="T8"><label>Table 8</label>
+ <table><tbody>
+  <tr><td>Other 1</td><td>44</td></tr>
+  <tr><td>Induction therapy 2</td><td>17</td></tr>
+ </tbody></table>
+ <table-wrap-foot>
+  <fn><p>1 Other diseases included reflux nephropathy, Alport syndrome, etc.
+   2 Induction therapy used in combination with methylprednisolone.</p></fn>
+ </table-wrap-foot></table-wrap>""")
+
+CROWDED_SYMBOLS = _doc("""<table-wrap id="T9"><label>Table 9</label>
+ <table><tbody>
+  <tr><td>N*</td><td>Proportion**</td></tr>
+ </tbody></table>
+ <table-wrap-foot>
+  <fn><p>*the number of annotated features; **the proportion of annotated reads.</p></fn>
+ </table-wrap-foot></table-wrap>""")
+
+
+def test_a_footnote_holding_two_numbered_notes_becomes_two_footnotes():
+    t = parse_tables(CROWDED_NUMBERED)[0]
+    assert [(f.label, f.label_source) for f in t.footnotes] == [("1", "text"), ("2", "split")]
+    assert t.footnotes[0].text == "Other diseases included reflux nephropathy, Alport syndrome, etc."
+    assert [n.label for n in t.footnotes_for(0, 0)] == ["1"]
+    assert [n.label for n in t.footnotes_for(1, 0)] == ["2"], (
+        "the second note was unreachable before the split, and its cell wears the marker")
+
+
+def test_a_symbol_series_splits_without_needing_a_sentence_boundary():
+    """`**` follows a letter in `...features; **the proportion` — a symbol needs no boundary,
+    because unlike a digit it can never be part of the word in front of it."""
+    t = parse_tables(CROWDED_SYMBOLS)[0]
+    assert [(f.label, f.label_source) for f in t.footnotes] == [("*", "text"), ("**", "split")]
+    assert [n.label for n in t.footnotes_for(0, 1)] == ["**"]
+
+
+def test_prose_that_merely_counts_is_not_split():
+    """`heated to 2 degrees` is a sentence; `etc. 2 Immunosuppressive` is a second footnote.
+    The sentence boundary is the only thing that separates them, so a digit requires one."""
+    t = parse_tables(_doc("""<table-wrap id="TA"><table><tbody>
+      <tr><td>Yield 1</td><td>4.2</td></tr>
+      <tr><td>Run 2</td><td>4.4</td></tr></tbody></table>
+     <table-wrap-foot><fn><p>1 Sample was heated to 2 degrees above ambient.</p></fn>
+     </table-wrap-foot></table-wrap>"""))[0]
+    assert [f.label for f in t.footnotes] == ["1"], "no split: nothing opens a second definition"
+    assert t.footnotes[0].text == "Sample was heated to 2 degrees above ambient."
+
+
+def test_an_interior_definition_no_value_wears_is_left_merged():
+    """D-195 again: a split adds a label, and a new label is a new way for a cell to acquire a
+    footnote it never had. Over-reaching text is a display problem; an invented binding is a
+    wrong value, so the corroboration requirement does not relax for splitting."""
+    t = parse_tables(_doc("""<table-wrap id="TB"><table><tbody>
+      <tr><td>Other 1</td><td>44</td></tr></tbody></table>
+     <table-wrap-foot><fn><p>1 Other diseases included Alport syndrome.
+      2 Immunosuppressive treatment at discharge.</p></fn>
+     </table-wrap-foot></table-wrap>"""))[0]
+    assert [f.label for f in t.footnotes] == ["1"], "no cell wears `2`, so nothing is cut out"
+    assert "Immunosuppressive" in t.footnotes[0].text, "the definition is kept, not discarded"
+
+
+def test_the_split_share_is_reportable_beside_the_recovered_share():
+    assert split_label_share(parse_tables(CROWDED_SYMBOLS)) == 0.5
+    assert split_label_share(parse_tables(MARKUP_BOUND)) == 0.0
+    assert split_label_share(parse_tables(UNCORROBORATED)) is None
+
+
+def test_a_general_note_that_defines_a_symbol_partway_through_is_split():
+    """88 of the 98 orphan markers left after the series pass were this shape: a footnote with no
+    marker of its own whose prose defines `*` somewhere inside. There is no series to walk from,
+    so the anchor is the symbol's own form plus a value wearing it."""
+    t = parse_tables(_doc("""<table-wrap id="TC"><table><tbody>
+      <tr><td>Age</td><td>0.008*</td></tr></tbody></table>
+     <table-wrap-foot><fn><p>Values are medians with interquartile range.
+      *Significant at the 5% level.</p></fn>
+     </table-wrap-foot></table-wrap>"""))[0]
+    labels = [(f.label, f.label_source) for f in t.footnotes]
+    assert (None, "none") in labels, "the general note keeps its own text and stays unlabelled"
+    assert ("*", "split") in labels
+    assert [n.text for n in t.footnotes_for(0, 1)] == ["Significant at the 5% level."]
+
+
+def test_a_letter_inside_an_unlabelled_note_is_NOT_split_out():
+    """A symbol cannot be part of the word in front of it; a letter can. With no series to anchor
+    on, a letter is indistinguishable from the sentence around it, so this case is refused rather
+    than guessed — the same line D-195 draws."""
+    t = parse_tables(_doc("""<table-wrap id="TD"><table><tbody>
+      <tr><td>Yield</td><td>4.2a</td></tr></tbody></table>
+     <table-wrap-foot><fn><p>Values are means. a Single replicate.</p></fn>
+     </table-wrap-foot></table-wrap>"""))[0]
+    assert [f.label for f in t.footnotes] == [None], "no marker of its own, and `a` is not a symbol"
