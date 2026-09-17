@@ -40,6 +40,8 @@ HITS = [
     _hit(pmcid="PMC111", pmid="1", title="open", isOpenAccess="Y", inEPMC="Y", license="cc by"),
     _hit(pmid="2", title="closed with abstract", abstractText="Widget B was inferred."),
     _hit(pmid="3", title="closed, nothing"),
+    _hit(pmcid="PMC555", pmid="5", title="meeting abstract", isOpenAccess="Y", inEPMC="Y",
+         pubTypeList={"pubType": ["Abstract"]}),
     _hit(pmcid="PMC444", pmid="4", title="retracted", isOpenAccess="Y", inEPMC="Y",
          pubTypeList={"pubType": ["Journal Article", "Retracted Publication"]}),
 ]
@@ -121,7 +123,8 @@ def test_every_hit_gets_an_outcome_and_none_is_dropped(tmp_path):
     assert by_title["closed with abstract"]["outcome"] == "abstract_only"
     assert by_title["closed, nothing"]["outcome"] == "unreachable"
     assert by_title["retracted"]["outcome"] == "retracted"
-    assert out["counts"] == {"hits": 57, "examined": 4, "full_text": 1, "abstract_only": 1,
+    assert by_title["meeting abstract"]["why"] == "published as a conference abstract"
+    assert out["counts"] == {"hits": 57, "examined": 5, "full_text": 2, "abstract_only": 1,
                              "unreachable": 1, "retracted": 1}
 
 
@@ -189,7 +192,7 @@ def _plan(tmp_path, **over):
 def test_plan_writes_a_config_the_runner_accepts(tmp_path):
     _fetched(tmp_path)
     out = _plan(tmp_path)
-    assert out["papers"] == 2
+    assert out["papers"] == 3
     dry = subprocess.run([sys.executable, str(ROOT / "scripts" / "run_wave.py"), "--config",
                           out["config"], "--dry-run"], capture_output=True, text=True)
     assert dry.returncode == 0, dry.stdout + dry.stderr
@@ -277,7 +280,7 @@ def test_export_writes_all_three_tiers_with_quotes(tmp_path):
 
     out = project.export(tmp_path)
     results = project.paths(tmp_path)["results"]
-    assert (out["papers"], out["candidates"], out["accepted"]) == (4, 1, 1)
+    assert (out["papers"], out["candidates"], out["accepted"]) == (5, 1, 1)
 
     accepted = list(csv.DictReader((results / "accepted.csv").open()))
     assert accepted[0]["widget_name"] == "Widget A"
@@ -298,4 +301,4 @@ def test_export_before_any_run_still_gives_the_reading_list(tmp_path):
     screened list of papers. An export that needed a database first would withhold it."""
     _fetched(tmp_path)
     out = project.export(tmp_path)
-    assert out["papers"] == 4 and out["accepted"] == 0 and out["candidates"] == 0
+    assert out["papers"] == 5 and out["accepted"] == 0 and out["candidates"] == 0

@@ -208,7 +208,12 @@ def fetch(root: str | pathlib.Path = ".", *, limit: int, allow_abstracts: bool,
                 store = build_from_jats(xml, sid, meta={**meta,
                                         "acquisition_route": "europepmc_open_access_full_text"})
                 write_store(store, p["sources"])
-                entry.update(outcome="full_text")
+                # Europe PMC serves meeting abstracts as open "full text". True, and misleading
+                # in a reading list: measured on the first clean run, 2 of 3 "full text" papers
+                # were conference abstracts of under 2,400 characters.
+                entry.update(outcome="full_text",
+                             why="published as a conference abstract"
+                             if "abstract" in d["pub_types"] else "")
                 time.sleep(pause)
                 continue
             except Exception as exc:                     # noqa: BLE001 — recorded, never silent
