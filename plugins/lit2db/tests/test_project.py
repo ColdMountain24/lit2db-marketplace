@@ -195,6 +195,20 @@ def test_plan_writes_a_config_the_runner_accepts(tmp_path):
     assert dry.returncode == 0, dry.stdout + dry.stderr
 
 
+def test_preflight_refuses_a_config_missing_a_key_the_pipeline_indexes(tmp_path):
+    """The first clean-room run passed preflight, then lost two papers to KeyError
+    'identity_primary' after their passes were paid for. Preflight exists to stop that."""
+    _fetched(tmp_path)
+    cfg_path = pathlib.Path(_plan(tmp_path)["config"])
+    cfg = json.loads(cfg_path.read_text())
+    assert cfg["identity_primary"] == "widget_name" and cfg["run_timestamp"]
+    del cfg["identity_primary"]
+    cfg_path.write_text(json.dumps(cfg))
+    dry = subprocess.run([sys.executable, str(ROOT / "scripts" / "run_wave.py"), "--config",
+                          str(cfg_path), "--dry-run"], capture_output=True, text=True)
+    assert dry.returncode != 0 and "identity_primary" in dry.stdout + dry.stderr
+
+
 def test_the_prompts_carry_no_domain_and_no_unfilled_project_marker(tmp_path):
     """The templates ship in a domain-blind plugin. Project specifics arrive only as the rendered
     ratified spec at run time, plus two structural names stamped at plan time."""

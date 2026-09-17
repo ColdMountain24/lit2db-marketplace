@@ -715,6 +715,15 @@ def preflight(cfg: dict, papers: list) -> list[str]:
     config wants all of them at once, not one per attempt.
     """
     problems: list[str] = []
+    # Keys the pipeline indexes directly. A missing one used to surface as a KeyError AFTER a
+    # paper's three extraction passes had been paid for: measured on the first clean-room run
+    # (2026-09-16), two of three papers died on `identity_primary` with their passes on disk.
+    for key in ("papers", "stores", "out", "db_path", "identity_primary", "run_timestamp",
+                "producing_process", "judge_model", "hunter_model", "auto_accept_threshold",
+                "fuse"):
+        if key not in cfg:
+            problems.append(f"`{key}` is missing from the config; the run would fail on it "
+                            f"mid-paper, after the extraction passes were paid for.")
     models = cfg.get("models") or []
     if not models:
         problems.append("`models` is empty — there is nothing to run.")

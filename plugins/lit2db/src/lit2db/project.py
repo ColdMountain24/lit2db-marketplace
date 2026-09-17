@@ -308,6 +308,9 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
                             "from their own reviewed records."),
         "min_populated_fields": min_populated_fields,
         "identity_fields": {entity_type: identity_field},
+        "identity_primary": identity_field,
+        "wave": "run",
+        "run_timestamp": _now(),
         "weights_key": "numeric",
         # The structure and taxon lookups key on field NAMES from one earlier project. Off unless
         # this spec happens to use those names, so a stranger's run never calls a chemistry API.
