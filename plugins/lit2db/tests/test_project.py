@@ -224,6 +224,14 @@ def test_the_prompts_carry_no_domain_and_no_unfilled_project_marker(tmp_path):
             assert word not in body, f"template {name}.md carries domain word {word!r}"
 
 
+def test_enum_fields_are_grounded_on_evidence_not_by_substring(tmp_path):
+    """D-061, found missing on the first clean-room run: every record scored 0.3 because a label
+    like `improved` never appears verbatim in its quote."""
+    _fetched(tmp_path)
+    cfg = json.loads(pathlib.Path(_plan(tmp_path)["config"]).read_text())
+    assert cfg["evidence_grounded_fields"] == ["basis"]
+
+
 def test_plan_refuses_an_identity_field_nobody_ratified(tmp_path):
     _fetched(tmp_path)
     with pytest.raises(ValueError, match="not a ratified field"):

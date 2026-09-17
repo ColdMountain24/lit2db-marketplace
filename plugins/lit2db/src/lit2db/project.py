@@ -312,6 +312,12 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
         "wave": "run",
         "run_timestamp": _now(),
         "weights_key": "numeric",
+        # D-061: a controlled-vocabulary value is never verbatim in a paper (no source contains
+        # the string "no_significant_difference"), so a lexical check scores a CORRECT label 0.0.
+        # Every enum field is grounded on its anchored evidence instead. Derived from the ratified
+        # field TYPES, so it adds nothing. Measured on the first clean-room run: without it all
+        # ten records scored 0.3 on a unanimous, correctly quoted label.
+        "evidence_grounded_fields": [f.name for f in spec.fields if f.enum],
         # The structure and taxon lookups key on field NAMES from one earlier project. Off unless
         # this spec happens to use those names, so a stranger's run never calls a chemistry API.
         "resolve_structures": "compound_name" in names,
