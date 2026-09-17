@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "lit2db": {
-      "command": "python3",
+      "command": "sh",
       "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python",
         "${CLAUDE_PLUGIN_ROOT}/mcp/lit2db_mcp/server.py"
       ],
       "env": {

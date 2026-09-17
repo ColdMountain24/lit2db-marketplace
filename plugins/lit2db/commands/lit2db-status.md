@@ -4,7 +4,7 @@ description: Show both tiers — the ML-ready database, and the candidate pool w
 **First, verify you are talking to the plugin you think you are.** Run:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/selfcheck.py"
+sh "${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python" "${CLAUDE_PLUGIN_ROOT}/scripts/selfcheck.py"
 ```
 
 Then do the check the script cannot do for itself: compare the MCP tool names it lists against

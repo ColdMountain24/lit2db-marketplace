@@ -1,0 +1,27 @@
+#!/bin/sh
+# Run lit2db's Python under an interpreter that can import it, on a machine that may not have one.
+#
+# macOS ships python3 3.9.6, and the MCP server needs 3.10+ because the `mcp` package does. A
+# researcher should not have to install Python to try this (D-199). So uv comes first: it fetches
+# its own interpreter and the three packages into a cache on first use, and never touches the
+# researcher's own Python. A python3 that already qualifies is the fallback, which is how a
+# development checkout without uv keeps working.
+#
+# When this launches the MCP server, stdout IS the protocol. Nothing here may print to it.
+#
+#   sh bin/lit2db-python scripts/run_demo.py
+#   sh bin/lit2db-python -c "import mcp, pydantic"
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+
+# PATH first, then where uv's own installer and the package managers put it. A GUI-launched
+# Claude Code does not always inherit the shell PATH the installer edited.
+for uv in "$(command -v uv 2>/dev/null)" "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" \
+          /opt/homebrew/bin/uv /usr/local/bin/uv; do
+  if [ -n "$uv" ] && [ -x "$uv" ]; then
+    exec "$uv" run --quiet --no-project --python ">=3.10" \
+      --with "pydantic>=2,<3" --with "mcp>=1.0,<2" --with "certifi>=2023" \
+      python "$@"
+  fi
+done
+exec python3 "$@"

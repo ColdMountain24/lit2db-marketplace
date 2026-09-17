@@ -17,17 +17,19 @@ answer what it asks.** Nothing below is required reading.
 <details>
 <summary>What it is checking, and how to do it by hand</summary>
 
-The plugin's MCP server and hooks run under whatever `python3` Claude Code launches them with.
-That interpreter needs two packages:
+The plugin's MCP server needs Python 3.10+ with `pydantic` and `mcp`. **A Mac ships Python 3.9.6**,
+so the server starts through `bin/lit2db-python`, which uses [uv](https://docs.astral.sh/uv/) to
+fetch its own Python and packages into a cache. Your own Python is never touched. If uv is not
+installed, the launcher falls back to a `python3` that already qualifies.
+
+By hand, if you would rather not let `/lit2db-start` do it:
 
 ```bash
-python3 --version          # need 3.10+ (tested on 3.13)
-python3 -m pip install "pydantic>=2" "mcp>=1.0"
+curl -LsSf https://astral.sh/uv/install.sh | sh     # or: brew install uv
 ```
 
-**Why this used to be the top of the page:** the MCP server (`mcp`) and the contracts
-(`pydantic`) import these at boot. If they're missing the server fails to start and the
-`mcp__plugin_lit2db_lit2db__*` tools simply are not there — **no error, no traceback, nothing
+**Why this used to be the top of the page:** if the server cannot start, the
+`mcp__plugin_lit2db_lit2db__*` tools simply are not there. **No error, no traceback, nothing
 naming the cause.** It was the single most likely thing to trip a live demo, and it tripped it
 silently, which is why the fix was to make the front door own it rather than to write a bigger
 warning here.
@@ -39,8 +41,9 @@ python3 scripts/doctor.py            # human-readable, exits nonzero if broken
 python3 scripts/doctor.py --json     # what /lit2db-start reads
 ```
 
-It reports the remedy against **the interpreter Claude Code is actually using**, which matters:
-a bare `pip install` may install into a different Python and leave the server just as blind.
+It runs the launcher exactly as the MCP config does, so it reports what the server will actually
+see rather than what your own `python3` happens to have. The first run downloads Python and three
+packages (3.1 s measured from an empty cache), and running the check does that download for you.
 </details>
 
 You also need Claude Code itself (Node.js-based; install per the official docs at
@@ -136,7 +139,7 @@ network, no model calls**, and prints exactly what the database accepts and reje
 
 ```bash
 cd ~/plugins/lit2db-marketplace/plugins/lit2db
-python3 scripts/run_demo.py
+sh bin/lit2db-python scripts/run_demo.py
 ```
 
 **What you'll see, and what to say while it runs:**
@@ -168,8 +171,8 @@ that would collide.)
 
 ```bash
 cd ~/plugins/lit2db-marketplace/plugins/lit2db
-python3 -m pip install "pytest>=7"
-python3 -m pytest -q
+uv run --no-project --python ">=3.10" --with "pydantic>=2,<3" --with "mcp>=1.0,<2" \
+    --with certifi --with "pytest>=7" --with "pyyaml>=6" python -m pytest -q
 ```
 
 Expect the suite to pass — **at least 773 tests** as of v0.53.0, with 2 skipped (network tests;
@@ -206,8 +209,8 @@ same verify → route → gate spine you just watched in the demo.
 
 | Symptom | Fix |
 |---|---|
-| `/lit2db-*` commands don't appear | MCP server failed to boot — almost always missing `mcp`/`pydantic` in the `python3` on PATH. Re-run Step 0, restart the session. |
-| `ModuleNotFoundError: lit2db` when running the demo | Run from `plugins/lit2db/` (Step 3 cds there) or set `PYTHONPATH=$PWD/src`. |
+| `/lit2db-*` tools don't appear | MCP server failed to boot. Run `python3 scripts/doctor.py`; it names the cause (usually uv not installed, or no internet on the first run). Fix, then restart the session. |
+| `ModuleNotFoundError` when running a script | Run it through `sh bin/lit2db-python`, which sets the path and the interpreter. Plain `python3` is the Mac's 3.9. |
 | MCP server starts but `db_query` errors | `LIT2DB_DB_PATH` points at `examples/demo.db`; the demo creates its own temp DB, so run `run_demo.py` first or point the var at a writable path. |
 | Hooks don't fire | Confirm `${CLAUDE_PLUGIN_ROOT}` resolved — check the plugin installed cleanly with `/plugin list`. |
 

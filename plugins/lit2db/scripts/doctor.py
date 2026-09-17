@@ -21,10 +21,17 @@ missing. Importing anything it is checking for would make it fail in the one cas
 diagnose. Every import below is from the standard library, and `tests/test_doctor.py` asserts
 it stays that way.
 
-IT REPORTS THE INTERPRETER'S OWN pip. `pip install` on a PATH may install into a different
-Python than the one Claude Code launches the server with, which produces the confusing state
-where the packages are installed and the server still cannot see them. The remedy string always
-names `sys.executable`.
+IT ASKS THE LAUNCHER, NOT python3. The server starts through `bin/lit2db-python`, which prefers
+uv (its own Python, fetched on first use) and falls back to a python3 that already qualifies.
+macOS ships python3 3.9.6, so on a researcher's Mac the python3 running this script is usually
+too old, and that is fine as long as uv is there (D-199). The verdict comes from running the
+launcher; the python3 lines are context. The remedy used to be `pip install` into
+`sys.executable`, and on current Homebrew and python.org installs that is refused outright
+(PEP 668), so it now installs uv, which leaves the researcher's own Python untouched.
+
+RUNNING THE PROBE ALSO WARMS THE CACHE. The first uv run downloads Python and three packages:
+measured at 3.1 s from an empty cache, well inside the MCP startup timeout, but doing it here
+means the server's own first start is not the one paying for it.
 
 Usage:
     python3 scripts/doctor.py           # human-readable
@@ -35,6 +42,8 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
 
 MIN_PYTHON = (3, 10)
@@ -69,6 +78,40 @@ def _dep(mod: str, spec: str, min_major):
     return {"name": mod, "ok": True, "found": str(version) if version else "present", "why": ""}
 
 
+UV_INSTALL = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+# Same order as bin/lit2db-python. A GUI-launched Claude Code does not always inherit the PATH
+# uv's installer edited, so the install locations are checked by path as well.
+UV_CANDIDATES = ("~/.local/bin/uv", "~/.cargo/bin/uv", "/opt/homebrew/bin/uv", "/usr/local/bin/uv")
+
+
+def _find_uv():
+    found = shutil.which("uv")
+    if found:
+        return found
+    for c in UV_CANDIDATES:
+        path = os.path.expanduser(c)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _probe_launcher(root: pathlib.Path, timeout: int = 600) -> dict:
+    """Run the launcher exactly as the MCP config does, and import what the server imports."""
+    launcher = root / "bin" / "lit2db-python"
+    if not launcher.is_file():
+        return {"ok": False, "found": None, "why": f"no launcher at {launcher}"}
+    code = "import sys, mcp, pydantic; print('%d.%d.%d' % sys.version_info[:3])"
+    try:
+        r = subprocess.run(["sh", str(launcher), "-c", code], capture_output=True,
+                           text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "found": None, "why": f"launcher did not finish in {timeout}s"}
+    if r.returncode == 0:
+        return {"ok": True, "found": "python " + r.stdout.strip(), "why": ""}
+    tail = (r.stderr or r.stdout).strip().splitlines()[-1:] or ["no output"]
+    return {"ok": False, "found": None, "why": tail[0].strip()}
+
+
 def diagnose() -> dict:
     checks, missing = [], []
 
@@ -84,6 +127,10 @@ def diagnose() -> dict:
         if not c["ok"]:
             missing.append(spec)
 
+    uv = _find_uv()
+    checks.append({"name": "uv", "ok": bool(uv), "found": uv,
+                   "why": "" if uv else "not installed"})
+
     root = _root()
     src = root / "src" / "lit2db"
     src_ok = src.is_dir()
@@ -94,27 +141,39 @@ def diagnose() -> dict:
     # about the live install, and the difference between those two answers is its own bug.
     installed = bool(os.environ.get("CLAUDE_PLUGIN_ROOT"))
 
-    if not py_ok:
-        remedy, human = "upgrade_python", (
-            f"This plugin needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer. "
-            f"Claude Code is using {sys.executable}, which is "
-            f"{'.'.join(str(x) for x in sys.version_info[:3])}.")
-    elif missing:
-        remedy, human = "install_deps", (
-            f"{sys.executable} -m pip install " + " ".join(f'"{m}"' for m in missing))
-    elif not src_ok:
+    # The python3 and package lines above describe THIS interpreter, which the launcher only
+    # uses when uv is absent. They are context; the launcher's result is the verdict.
+    # `ok: None` means not used, which is neither a pass nor a failure.
+    for c in checks:
+        if c["name"] in ("python", "pydantic", "mcp") and uv:
+            c["ok"], c["why"] = None, "not used: uv supplies its own Python"
+    launch = _probe_launcher(root) if src_ok else {"ok": False, "found": None, "why": "skipped"}
+    checks.append({"name": "launcher", **launch})
+
+    if not src_ok:
         remedy, human = "reinstall_plugin", (
             "The plugin files are not where they should be. Re-run "
             "`/plugin install lit2db@lit2db-marketplace`.")
-    else:
+    elif launch["ok"]:
         remedy, human = "none", "Environment is ready."
+    elif not uv:
+        why = (f"Python {'.'.join(str(x) for x in sys.version_info[:3])} is too old"
+               if not py_ok else "packages are missing (" + ", ".join(missing) + ")"
+               if missing else launch["why"])
+        remedy, human = "install_uv", (
+            f"{UV_INSTALL}   # installs uv, which fetches its own Python for this plugin "
+            f"and leaves {sys.executable} untouched. Reason: {why}.")
+    else:
+        remedy, human = "uv_failed", (
+            f"uv is installed ({uv}) but could not start the plugin: {launch['why']}. "
+            "The first run downloads Python and three packages, so it needs the internet once.")
 
     return {"ok": remedy == "none", "remedy": remedy, "fix": human,
             "checks": checks, "plugin_root": str(root), "running_as_install": installed,
             "python": sys.executable,
             # Even a clean environment needs this said once: installing the packages does not
             # start the server that failed to boot without them.
-            "restart_required": remedy in ("install_deps", "reinstall_plugin")}
+            "restart_required": remedy in ("install_uv", "uv_failed", "reinstall_plugin")}
 
 
 def main() -> int:
@@ -131,7 +190,7 @@ def main() -> int:
           f"  plugin root: {d['plugin_root']}"
           f"{'  (live install)' if d['running_as_install'] else '  (checkout)'}\n")
     for c in d["checks"]:
-        mark = "ok  " if c["ok"] else "FAIL"
+        mark = "--  " if c["ok"] is None else "ok  " if c["ok"] else "FAIL"
         detail = c["found"] or ""
         print(f"  [{mark}] {c['name']:<15} {detail}{'  <- ' + c['why'] if c['why'] else ''}")
 
@@ -140,9 +199,9 @@ def main() -> int:
         return 0
     print(f"\nFix:\n  {d['fix']}")
     if d["restart_required"]:
-        print("\nThen QUIT AND RESTART Claude Code. Installing the packages does not start the\n"
-              "server that failed to boot without them, and /reload-plugins does not restart it\n"
-              "either — it refreshes commands, hooks and agents only.")
+        print("\nRun this check again once that is done (it warms the cache), then QUIT AND\n"
+              "RESTART Claude Code. A server that failed to boot does not start by itself, and\n"
+              "/reload-plugins does not restart it: it refreshes commands, hooks and agents only.")
     return 1
 
 

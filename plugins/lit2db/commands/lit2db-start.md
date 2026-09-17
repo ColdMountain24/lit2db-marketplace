@@ -14,18 +14,19 @@ should never see the word "schema", "ledger", "adapter" or "unit of analysis" un
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doctor.py --json
 ```
 
-The plugin's MCP server imports `pydantic` and `mcp` at boot. If either is missing the server
-never starts and its tools are simply absent — no error, no traceback, nothing naming the cause.
-A researcher cannot diagnose that, and should not have to. **This command is the front door, so
-it owns the problem.**
+The plugin's MCP server needs Python 3.10+ with `pydantic` and `mcp`, and a Mac ships 3.9.6. It
+starts through `bin/lit2db-python`, which uses uv to fetch its own Python so the researcher never
+installs one. If that cannot run, the server never starts and its tools are simply absent — no
+error, no traceback, nothing naming the cause. A researcher cannot diagnose that, and should not
+have to. **This command is the front door, so it owns the problem.**
 
 Act on `remedy`:
 
 | `remedy` | what you do |
 |---|---|
-| `none` | say nothing about it and go to step 1 |
-| `install_deps` | **offer to run the `fix` command for them**, in one sentence, in plain language: *"One-time setup: I need to install two Python packages first. Shall I?"* Run it on yes. Then step 3 below. |
-| `upgrade_python` | you cannot fix this. Say which Python Claude Code is using and what version is needed, and stop. |
+| `none` | say nothing about it. **But check you actually hold the `mcp__plugin_lit2db_lit2db__*` tools.** If the environment is ready and you do not, the server failed at session start (a first-run download interrupted, say): tell them to quit Claude Code, start a new session, and run `/lit2db-start` again, and stop. Otherwise go to step 1. |
+| `install_uv` | **offer to run the `fix` command for them**, in one sentence, in plain language: *"One-time setup: I need to install a small tool called uv that gives this plugin its own copy of Python. It won't touch your Python. Shall I?"* Run it on yes, then run `doctor.py --json` again (that download is the slow part, so it happens now rather than at the next start). Then the restart below. |
+| `uv_failed` | read them the `fix` text in plain words. The usual cause is no internet on the first run. Stop. |
 | `reinstall_plugin` | tell them to re-run `/plugin install lit2db@lit2db-marketplace`, and stop. |
 
 **If `restart_required` is true, say this and stop — do not continue into the interview.**
@@ -111,7 +112,7 @@ Run the query, then tell them: **how many papers, how many are readable, and how
 Readable means full text or an abstract you can actually obtain — measure it, do not assume it.
 A source that is indexed is not a source you can read.
 
-Then run **`preflight`** (`scripts/run_wave.py --dry-run`). Configuration problems surface here,
+Then run **`preflight`** (`sh ${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python ${CLAUDE_PLUGIN_ROOT}/scripts/run_wave.py --dry-run`). Configuration problems surface here,
 before a single model call. Fix them or float them; never start a run that will die on paper six.
 
 ## 5 — Set the expectation honestly, in this order

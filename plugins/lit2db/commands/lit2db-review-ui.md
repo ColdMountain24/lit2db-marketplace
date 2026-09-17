@@ -8,7 +8,7 @@ questions and get on with their day. Both build the same calibration set.
 Start it and hand over:
 
 ```bash
-cd <plugin>/plugins/lit2db && PYTHONPATH=src python3 scripts/review_ui.py \
+sh "${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python" "${CLAUDE_PLUGIN_ROOT}/scripts/review_ui.py" \
     --db <their.db> --sources <their stores>
 ```
 

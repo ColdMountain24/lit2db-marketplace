@@ -38,26 +38,77 @@ def test_doctor_imports_nothing_outside_the_standard_library():
 def test_a_healthy_environment_reports_ready():
     d = doctor.diagnose()
     assert d["ok"] is True and d["remedy"] == "none", (
-        f"the test environment has pydantic and mcp installed, so doctor should pass: {d}")
+        f"the test environment can run the launcher, so doctor should pass: {d}")
     assert d["restart_required"] is False
+    assert any(c["name"] == "launcher" and c["ok"] for c in d["checks"]), (
+        "the verdict must come from running the launcher the MCP config uses, not from "
+        "inspecting whichever python3 happens to be running this script")
 
 
-def test_a_missing_dependency_names_the_right_interpreter_and_demands_a_restart(monkeypatch):
-    """Two things the researcher cannot work out alone. `pip install` on a PATH may install into
-    a different Python than the one Claude Code launches the server with — which leaves the
-    packages installed and the server still blind. And installing them does not start a server
-    that already failed to boot."""
+def _launcher_fails(monkeypatch):
+    monkeypatch.setattr(doctor, "_probe_launcher",
+                        lambda root, timeout=600: {"ok": False, "found": None,
+                                                   "why": "ModuleNotFoundError: No module named 'mcp'"})
+
+
+def test_a_stock_mac_without_uv_is_told_to_install_uv_not_pip(monkeypatch):
+    """D-199. macOS ships python3 3.9.6 and the server needs 3.10+. The old remedy was `pip
+    install` into sys.executable, which cannot fix an interpreter that is too old and is refused
+    outright by current Homebrew and python.org installs (PEP 668). uv fetches its own Python and
+    leaves the researcher's alone."""
+    monkeypatch.setattr(doctor, "_find_uv", lambda: None)
+    _launcher_fails(monkeypatch)
+    monkeypatch.setattr(doctor, "MIN_PYTHON", (99, 0))      # this interpreter is "too old"
+    d = doctor.diagnose()
+
+    assert d["ok"] is False and d["remedy"] == "install_uv"
+    assert doctor.UV_INSTALL in d["fix"]
+    assert "pip install" not in d["fix"]
+    assert d["restart_required"] is True, (
+        "installing uv does not start a server that already failed to boot without it")
+
+
+def test_missing_packages_on_a_new_enough_python_also_route_to_uv(monkeypatch):
     real = importlib.util.find_spec
     monkeypatch.setattr(doctor.importlib.util, "find_spec",
                         lambda n, *a, **k: None if n == "pydantic" else real(n, *a, **k))
+    monkeypatch.setattr(doctor, "_find_uv", lambda: None)
+    _launcher_fails(monkeypatch)
     d = doctor.diagnose()
 
-    assert d["ok"] is False and d["remedy"] == "install_deps"
-    assert sys.executable in d["fix"], (
-        "the remedy must name THIS interpreter, not a bare `pip` that may belong to another "
-        "Python — that mismatch is what makes the failure confusing rather than merely annoying")
-    assert "pydantic>=2" in d["fix"]
+    assert d["remedy"] == "install_uv"
+    assert "pydantic>=2" in d["fix"], "the reason must name what is actually missing"
     assert d["restart_required"] is True
+
+
+def test_uv_present_but_failing_says_so_rather_than_blaming_python(monkeypatch):
+    """If uv is there, the python3 running this script is irrelevant, and reporting it as the
+    fault would send the researcher to fix the wrong thing."""
+    monkeypatch.setattr(doctor, "_find_uv", lambda: "/opt/homebrew/bin/uv")
+    _launcher_fails(monkeypatch)
+    d = doctor.diagnose()
+
+    assert d["remedy"] == "uv_failed"
+    assert "No module named 'mcp'" in d["fix"]
+    assert all(c["ok"] is None for c in d["checks"] if c["name"] in ("python", "pydantic", "mcp"))
+
+
+def test_the_launcher_is_what_the_mcp_config_runs():
+    """A doctor that probes one launch path while the config uses another is a check of the
+    wrong thing, which passes."""
+    import json
+    cfg = json.loads((ROOT / "mcp-config.json").read_text(encoding="utf-8"))
+    args = cfg["mcpServers"]["lit2db"]["args"]
+    assert cfg["mcpServers"]["lit2db"]["command"] == "sh"
+    assert args[0] == "${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python"
+    assert (ROOT / "bin" / "lit2db-python").is_file()
+
+
+def test_the_launcher_is_plain_posix_sh():
+    """It runs as `sh`, which is dash on some Linux machines, so a bashism fails there only."""
+    out = subprocess.run(["sh", "-n", str(ROOT / "bin" / "lit2db-python")],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
 
 
 def test_it_exits_nonzero_so_a_caller_can_branch_on_it():

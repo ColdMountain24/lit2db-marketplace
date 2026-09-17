@@ -113,7 +113,7 @@ Control Plane → Ingest → **Stage 0.5 Scope Elicitation** → Schema Design �
 ## Try the demo (offline, no network)
 
 ```
-python3 scripts/run_demo.py
+sh bin/lit2db-python scripts/run_demo.py
 ```
 
 Three records go through the spine:
@@ -153,13 +153,13 @@ from a bad one. Two ways to collect them, same calibration set:
 
 ```
 /lit2db-review                                   # conversational, a few records per question
-python3 scripts/review_ui.py --db p.db --sources ./sources   # in a browser, beside the paper
+sh bin/lit2db-python scripts/review_ui.py --db p.db --sources ./sources   # in a browser, beside the paper
 ```
 
 ## Reviewing beside the paper
 
 ```
-python3 scripts/review_ui.py          # with no database, builds a demo and says so
+sh bin/lit2db-python scripts/review_ui.py          # with no database, builds a demo and says so
 ```
 
 A two-pane page on `127.0.0.1`: the candidate on the left — the value, which paper it came from,
