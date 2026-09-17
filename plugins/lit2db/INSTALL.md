@@ -211,7 +211,7 @@ same verify → route → gate spine you just watched in the demo.
 |---|---|
 | `/lit2db-*` tools don't appear | MCP server failed to boot. Run `python3 scripts/doctor.py`; it names the cause (usually uv not installed, or no internet on the first run). Fix, then restart the session. |
 | `ModuleNotFoundError` when running a script | Run it through `sh bin/lit2db-python`, which sets the path and the interpreter. Plain `python3` is the Mac's 3.9. |
-| MCP server starts but `db_query` errors | `LIT2DB_DB_PATH` points at `examples/demo.db`; the demo creates its own temp DB, so run `run_demo.py` first or point the var at a writable path. |
+| Where is my data? | In a `lit2db/` folder inside the folder you started Claude Code in: the database, the papers, and `results/` with the spreadsheets. Nothing is kept inside the plugin, because updates replace it. `LIT2DB_DB_PATH` overrides the database location. |
 | Hooks don't fire | Confirm `${CLAUDE_PLUGIN_ROOT}` resolved — check the plugin installed cleanly with `/plugin list`. |
 
 ---

@@ -67,7 +67,7 @@ build if any field traces to an unratified item.
 ## Output
 
 After Steps A–E are complete and every candidate field traces to a ratified ledger item, emit
-a `SchemaReadySpec` (JSON) into `instantiation/<project>/`. Set `spec_version` and freeze.
+a `SchemaReadySpec` (JSON) to `./lit2db/spec.json` in the researcher's own folder. Set `spec_version` and freeze.
 Then — and only then — Stage 1 ingest may begin.
 
 ## Worked grounding

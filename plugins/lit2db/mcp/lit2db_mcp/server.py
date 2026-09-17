@@ -89,7 +89,14 @@ AUTOACCEPT = resolve_threshold(env=os.environ)
 # calibration. Resolved HERE from the same function the PreToolUse hook uses, so the tool and
 # the hook cannot end up applying different numbers.
 MIN_POPULATED = resolve_min_populated(env=os.environ)
-DB_PATH = os.environ.get("LIT2DB_DB_PATH", str(_PLUGIN_ROOT / "examples" / "demo.db"))
+# The researcher's data lives in THEIR folder, never under the plugin: Claude Code replaces the
+# plugin folder on every update, so a database written there is lost on the next release
+# (D-199). Measured 2026-09-16: a plugin's MCP server is launched with its working directory and
+# CLAUDE_PROJECT_DIR both set to the folder `claude` was started in. Same layout as
+# `lit2db.project`, so the tools and `scripts/project.py` read and write one database.
+_PROJECT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()) / "lit2db"
+DB_PATH = os.environ.get("LIT2DB_DB_PATH", str(_PROJECT / "database.db"))
+SOURCES_DIR = _PROJECT / "corpus" / "sources"
 
 
 # ------------------------------------------------------------------------------------
@@ -150,7 +157,7 @@ def build_store(xml: str, source_id: str, root_dir: str = "", meta: dict = {}) -
     indistinguishable, three stages later, from a paper that genuinely had nothing in it.
     """
     store = build_from_jats(xml, source_id, meta=dict(meta) or None)
-    paths = write_store(store, root_dir or (_PLUGIN_ROOT / "sources"))
+    paths = write_store(store, root_dir or SOURCES_DIR)
     return {**paths, **store["stats"], "source_id": source_id,
             "source_text_scope": store["meta"]["source_text_scope"],
             "sections": [s["title"] for s in store["sections"]]}
@@ -174,7 +181,7 @@ def build_abstract_store(title: str, abstract: str, source_id: str, root_dir: st
     Raises rather than emitting an empty store, on the same grounds as `build_store`.
     """
     store = build_from_abstract(title, abstract, source_id, meta=dict(meta) or None)
-    paths = write_store(store, root_dir or (_PLUGIN_ROOT / "sources"))
+    paths = write_store(store, root_dir or SOURCES_DIR)
     return {**paths, **store["stats"], "source_id": source_id,
             "source_text_scope": store["meta"]["source_text_scope"],
             "sections": [s["title"] for s in store["sections"]]}

@@ -17,7 +17,9 @@ This is not ceremony. A stale marketplace clone once left v0.1.0 installed again
 repo: 6 MCP tools instead of 22, an `extractor-agent` holding only `Read`, and no error
 anywhere. It cost two sessions and was invisible the whole time.
 
-**Then report BOTH tiers**, because the product is both.
+**Then report BOTH tiers**, because the product is both. The same three tiers are on disk as
+spreadsheets once `project.py export` has run: `lit2db/results/papers.csv`, `candidates.csv`,
+`accepted.csv`. Re-run the export if the database has changed since.
 
 1. `db_query` — the **ML-ready** database: how many records cleared the gate, their entity types
    and confidence distribution. This view excludes quarantined, human-review-pending and

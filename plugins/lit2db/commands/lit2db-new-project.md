@@ -5,10 +5,13 @@ argument-hint: [project-name]
 Start a new domain instantiation of the lit2db pipeline.
 
 The scaffold in `src/lit2db/` is **domain-blind**. All domain substance lives under
-`instantiation/<project>/` and must trace to a ratified ratification-ledger item.
+the project's spec and must trace to a ratified ratification-ledger item.
 
 Do this:
-1. Create `instantiation/$1/` by copying `instantiation/_TEMPLATE/instantiation.yaml`.
+1. The spec belongs to the researcher, so it lives in their folder: it is frozen to
+   `./lit2db/spec.json` (a `SchemaReadySpec`, in JSON), never inside the plugin, which an update
+   replaces. `${CLAUDE_PLUGIN_ROOT}/instantiation/_TEMPLATE/instantiation.yaml` documents every
+   key and why it exists; read it, do not copy it into the plugin.
 2. Launch the **scope-elicitation-agent** to run the Stage-0.5 interview (Steps A–E over the
    ten narrowing axes). The agent PROPOSES structure; it must not originate domain substance.
 3. Every proposed item enters the ratification ledger as `PROPOSED`. **Stop and wait for the

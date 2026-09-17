@@ -108,12 +108,64 @@ researcher confirming a concrete proposal, never from asking them less.
 
 ## 4 — Show the corpus before spending anything
 
-Run the query, then tell them: **how many papers, how many are readable, and how many are not.**
-Readable means full text or an abstract you can actually obtain — measure it, do not assume it.
-A source that is indexed is not a source you can read.
+Everything from here runs through one tool, in the researcher's current folder. Define it once:
 
-Then run **`preflight`** (`sh ${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python ${CLAUDE_PLUGIN_ROOT}/scripts/run_wave.py --dry-run`). Configuration problems surface here,
-before a single model call. Fix them or float them; never start a run that will die on paper six.
+```bash
+L2D="sh ${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python ${CLAUDE_PLUGIN_ROOT}/scripts/project.py"
+```
+
+Each step prints JSON and exits nonzero on a refusal. Their data lands in `./lit2db/`, never in
+the plugin, which an update replaces.
+
+**Before the query is ratified, show them what it returns.** Nothing is downloaded:
+
+```bash
+$L2D preview --query '<the query you propose>' --limit 100
+```
+
+Tell them, in this order: how many papers match, how many of the first hundred can be read in
+full, how many only as an abstract, and ten titles. Readable means Europe PMC holds open full
+text; measure it, do not assume it. Expect it to be low: on a vitamin D trials query, 14 of the
+first 50. If most of their literature is abstract-only, say so now, and ask whether abstracts are
+admissible. That answer is theirs, and it goes in the ledger. A query that pulls in reviews,
+corrigenda and conference abstracts is a structure problem you fix by proposing a better query
+(`NOT PUB_TYPE:"review"`, say), not by filtering quietly afterwards.
+
+**Once the spec is frozen at `./lit2db/spec.json`, fetch the papers.** `fetch` runs the ratified
+query exactly as written and refuses a spec that does not validate:
+
+```bash
+$L2D fetch --limit 20 --abstracts      # --abstracts ONLY if the ratified scope admits them
+```
+
+Start at 20 for a first database. Report the counts it returns: full text, abstract only,
+unreachable, retracted. Retracted papers are never read.
+
+**Then write the run configuration.** These are ratified choices, so put each to the researcher
+in plain words first and pass what they chose:
+
+```bash
+$L2D plan --entity-type <slug for one row> --identity <the ratified identifying field> \
+    --models sonnet sonnet sonnet --judge-model opus --hunter-model sonnet \
+    --audit-fraction <their answer>
+```
+
+- `--identity` is the field Stage-0.5 axis 5 ratified as what makes two rows the same thing.
+- `--models`: three independent readings, whose agreement is a signal. The default fact-checker
+  is a different model (Opus checking Sonnet), and that is the one independence it has.
+- `--audit-fraction` has no default, on purpose (D-081). Ask: *"Of the values the pipeline turns
+  down, what share should still get a second check, so you can tell how often it wrongly
+  rejects something? The first project used 20%."*
+- The accept threshold stays at the conservative 0.95 until they have reviewed enough records
+  to set it from their own data.
+
+`plan` runs the preflight itself. `preflight_ok` must be true. Configuration problems surface
+here, before a single model call: fix them or float them, and never start a run that will die on
+paper six.
+
+**Say what it costs before it starts.** It runs on their own Claude plan. Measured on a 183-paper
+run: about 62 thousand new tokens per paper, plus several times that in cheap re-reads. If a usage
+limit is hit, the run waits for it to reset and carries on by itself.
 
 ## 5 — Set the expectation honestly, in this order
 
@@ -133,12 +185,25 @@ eyes, and here is everything I looked at" — all three, always, never the first
 
 ## 6 — Run it, and stay with them
 
-Launch the wave. While it runs, report progress in papers, not tokens. When it finishes, hand off
-to `/lit2db-status`, which shows both tiers.
+```bash
+$L2D run          # long; start it in the background. Resumable: re-running skips finished papers.
+```
 
-**Anything that blocks is a question, not a stop** (D-095). A configuration refusal floats to the
-researcher and waits. If they are away, skip that source, record why, and keep going — an
-unattended run should use the night and leave a decision list, not halt on paper one.
+Run it in the background and report progress in **papers**, never tokens: count
+`lit2db/run/*/scored.json` against the paper count `plan` returned.
+
+**Anything that blocks is a question, not a stop** (D-095). The run writes questions only a
+researcher can answer to `lit2db/run/QUESTIONS.jsonl` and keeps going. When it finishes, bring
+those questions to them, then:
+
+```bash
+$L2D export
+```
+
+and tell them where the three spreadsheets are, in this order, with the count in each:
+`lit2db/results/papers.csv` (every paper, and what happened to it), `candidates.csv` (values found
+but not accepted, each with its quote and the reason), `accepted.csv` (what cleared the bar).
+Then hand off to `/lit2db-status`.
 
 The one thing that never floats: a record that fails verification is not written. That is not a
 setting, and it is what makes the rest of it worth anything.

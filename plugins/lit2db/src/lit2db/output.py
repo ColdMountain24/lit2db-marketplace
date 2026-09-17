@@ -9,6 +9,7 @@ callers reach by loading a *server file* as a module is not a library function.
 from __future__ import annotations
 
 import json
+import pathlib
 import sqlite3
 from datetime import datetime, timezone
 
@@ -34,6 +35,7 @@ def connect(db_path: str) -> sqlite3.Connection:
     status column relies on every future reader remembering to filter. Separation cannot be
     forgotten: `db_query` reads `records` and nothing else.
     """
+    pathlib.Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db_path)
     con.execute("""CREATE TABLE IF NOT EXISTS records(
         record_id TEXT PRIMARY KEY,

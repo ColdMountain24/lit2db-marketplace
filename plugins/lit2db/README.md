@@ -49,6 +49,11 @@ Local development:
 Four questions in your own language — what you want to collect, what one row should be, which
 papers count, and what you would do with the finished table. It hands off automatically to the
 Stage-0.5 interview carrying your answers, so you never have to know the stage numbering below.
+Everything it makes lands in a `lit2db/` folder inside the folder you started Claude Code in:
+the papers, the database, and `results/` with three spreadsheets (every paper and what happened
+to it, the values waiting for your eyes, the values that cleared the bar). Nothing is kept inside
+the plugin, because updates replace it.
+
 Everything else in this README is what happens underneath.
 
 ## What's in the box

@@ -8,7 +8,7 @@ argument-hint: <source-id-or-path> [--k N]
 Runs `$1` through the whole spine and reports what was written and what was refused.
 **A denied value is the system working, not a failure of the run.**
 
-Read `instantiation/<project>/instantiation.yaml` first. You need `routing.ensemble_k`,
+Read the project's frozen spec at `./lit2db/spec.json` first, and the run settings in `./lit2db/run.json` if `plan` has been run. You need `routing.ensemble_k`,
 `routing.ensemble_min_agreeing`, the frozen schema, and — for Stage 3 — each entity type's
 **identity field** (Stage-0.5 axis 5). If the instantiation does not name one for a type
 that can have several records per paper, stop and ask: without it, records cannot be aligned
