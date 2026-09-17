@@ -108,11 +108,16 @@ researcher confirming a concrete proposal, never from asking them less.
 
 ## 4 — Show the corpus before spending anything
 
-Everything from here runs through one tool, in the researcher's current folder. Define it once:
+Everything from here runs through one tool, in the researcher's current folder:
 
 ```bash
-L2D="sh ${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python ${CLAUDE_PLUGIN_ROOT}/scripts/project.py"
+sh "${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python" "${CLAUDE_PLUGIN_ROOT}/scripts/project.py" <step> ...
 ```
+
+**Write that out in full on every call.** Do not store it in a shell variable: a Mac's default
+shell is zsh, which does not split an unquoted variable into words, so `$VAR preview` fails with
+"no such file". Measured on the first clean run. Below, `project.py <step>` is shorthand for the
+full line.
 
 Each step prints JSON and exits nonzero on a refusal. Their data lands in `./lit2db/`, never in
 the plugin, which an update replaces.
@@ -120,7 +125,7 @@ the plugin, which an update replaces.
 **Before the query is ratified, show them what it returns.** Nothing is downloaded:
 
 ```bash
-$L2D preview --query '<the query you propose>' --limit 100
+project.py preview --query '<the query you propose>' --limit 100
 ```
 
 Tell them, in this order: how many papers match, how many of the first hundred can be read in
@@ -135,7 +140,7 @@ corrigenda and conference abstracts is a structure problem you fix by proposing 
 query exactly as written and refuses a spec that does not validate:
 
 ```bash
-$L2D fetch --limit 20 --abstracts      # --abstracts ONLY if the ratified scope admits them
+project.py fetch --limit 20 --abstracts      # --abstracts ONLY if the ratified scope admits them
 ```
 
 Start at 20 for a first database. Report the counts it returns: full text, abstract only,
@@ -145,7 +150,7 @@ unreachable, retracted. Retracted papers are never read.
 in plain words first and pass what they chose:
 
 ```bash
-$L2D plan --entity-type <slug for one row> --identity <the ratified identifying field> \
+project.py plan --entity-type <slug for one row> --identity <the ratified identifying field> \
     --models sonnet sonnet sonnet --judge-model opus --hunter-model sonnet \
     --audit-fraction <their answer>
 ```
@@ -186,7 +191,7 @@ eyes, and here is everything I looked at" — all three, always, never the first
 ## 6 — Run it, and stay with them
 
 ```bash
-$L2D run          # long; start it in the background. Resumable: re-running skips finished papers.
+project.py run          # long; start it in the background. Resumable: re-running skips finished papers.
 ```
 
 Run it in the background and report progress in **papers**, never tokens: count
@@ -197,7 +202,7 @@ researcher can answer to `lit2db/run/QUESTIONS.jsonl` and keeps going. When it f
 those questions to them, then:
 
 ```bash
-$L2D export
+project.py export
 ```
 
 and tell them where the three spreadsheets are, in this order, with the count in each:
