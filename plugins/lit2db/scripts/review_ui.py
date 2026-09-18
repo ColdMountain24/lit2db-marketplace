@@ -223,14 +223,38 @@ class _Handler(BaseHTTPRequestHandler):
                          # and a new optional key must not be able to crash one that predates it.
                          order=self.cfg.get("order", "by_root_cause"),
                          unadjudicated_only=not self.cfg["show_all"])
+        q = dict(q)
+        q["queue"] = apply_focus(q.get("queue") or [], self.cfg.get("focus", ""))
+        q["n"] = len(q["queue"])
         return {**q, "sources": self.cfg["sources"], "db": self.cfg["db"],
-                "showing_all": self.cfg["show_all"]}
+                "showing_all": self.cfg["show_all"], "focus": self.cfg.get("focus", "")}
 
     def _view(self, record_id: str, source_id: str) -> dict:
         row = next((r for r in self._queue()["queue"]
                     if r["record_id"] == record_id and r["source_id"] == source_id), {})
         return record_view(self.cfg["db"], self.cfg["sources"], record_id, source_id,
                            row=row, autoaccept=self.cfg["autoaccept"])
+
+
+# WHICH RECORDS ARE WORTH AN AFTERNOON FIRST. A calibration set is built from records where the
+# evidence and the gate disagree, and the sharpest of those is the record the adversarial judge
+# read the source for and called SUPPORTED while the gate turned it down: both sides are already
+# argued, so the researcher is settling a disagreement rather than starting one. Measured on the
+# first BBB wave: 21 of 56 records, and the report called them the cheapest possible gold-set
+# seed. A presentation filter only — this page cannot write a record under any focus.
+FOCUS = {
+    "judge-supported": lambda r: (str(r.get("judge_verdict") or "").lower() == "supported"
+                                  and r.get("decision") != "allow"),
+    "all": lambda r: True,
+}
+
+
+def apply_focus(queue: list, focus: str) -> list:
+    if not focus or focus == "all":
+        return list(queue)
+    if focus not in FOCUS:
+        raise ValueError(f"unknown focus {focus!r} (have: {sorted(FOCUS)})")
+    return [r for r in queue if FOCUS[focus](r)]
 
 
 def serve(cfg: dict, port: int = 8765) -> ThreadingHTTPServer:
@@ -258,6 +282,10 @@ def main(argv=None) -> int:
     p.add_argument("--order", default="by_root_cause",
                    choices=["by_root_cause", "best_first", "worst_first"],
                    help="which candidates to put in front of the reviewer first")
+    p.add_argument("--focus", default="", choices=["", "judge-supported", "all"],
+                   help="judge-supported: only records the adversarial judge backed and the gate "
+                        "still refused. They are the sharpest calibration seed, because both "
+                        "sides of the disagreement are already argued.")
     p.add_argument("--adjudicator", default="researcher")
     p.add_argument("--no-browser", action="store_true")
     p.add_argument("--verbose", action="store_true")
@@ -275,7 +303,7 @@ def main(argv=None) -> int:
               f"'can't tell', which is the point.")
 
     cfg = {"db": db, "sources": sources, "limit": a.limit, "show_all": a.all,
-           "order": a.order,
+           "order": a.order, "focus": a.focus,
            "adjudicator": a.adjudicator, "autoaccept": resolve_threshold(env=os.environ),
            "verbose": a.verbose}
 
@@ -287,6 +315,11 @@ def main(argv=None) -> int:
 
     url = f"http://127.0.0.1:{httpd.server_address[1]}"
     n = review_queue(db, limit=a.limit, order=a.order, unadjudicated_only=not a.all)
+    n = {**n, "queue": apply_focus(n.get("queue") or [], a.focus)}
+    n["n"] = len(n["queue"])
+    if a.focus == "judge-supported":
+        print("\nShowing only records the fact-checker read the source for and called "
+              "SUPPORTED, which the gate still refused.")
     print(f"\n{n['n']} candidate(s) waiting · {n['adjudicated_total']} already ruled on · "
           f"{n['ml_ready_total']} confirmed rows in the database")
     # What the run tripped over, collapsed. Printed because a reviewer deciding how to spend an

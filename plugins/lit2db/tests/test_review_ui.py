@@ -630,3 +630,17 @@ def test_a_literature_field_with_no_quote_is_still_missing_evidence(tmp_path):
     v = record_view(db, sources, "r1", "PMC1")
     assert v["verdicts_allowed"] == ["cant_tell"]
     assert "compound_name" in (v["blocked_because"] or "")
+
+
+def test_focus_puts_the_sharpest_calibration_records_first():
+    """From the first BBB wave: 21 of 56 records were refused by the gate while the adversarial
+    judge, having read the source, called them SUPPORTED. Both sides are already argued, so a
+    researcher settles a disagreement instead of starting one."""
+    import review_ui
+    queue = [{"record_id": "a", "judge_verdict": "supported", "decision": "deny"},
+             {"record_id": "b", "judge_verdict": "partial", "decision": "deny"},
+             {"record_id": "c", "judge_verdict": "supported", "decision": "allow"},
+             {"record_id": "d", "judge_verdict": None, "decision": "deny"}]
+    assert [r["record_id"] for r in review_ui.apply_focus(queue, "judge-supported")] == ["a"]
+    assert len(review_ui.apply_focus(queue, "all")) == 4
+    assert len(review_ui.apply_focus(queue, "")) == 4

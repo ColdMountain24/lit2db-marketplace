@@ -65,6 +65,13 @@ Everything lands in a `lit2db` folder inside your folder. The part you'll want i
 Expect `accepted.csv` to be short at first. That's on purpose: the tool would rather hold a value
 back for you to check than let a wrong one in.
 
+## When nothing is accepted
+
+That is the normal first result, not a failure. The bar ships high on purpose, so values wait for
+you rather than entering the table unchecked. Tell Claude you want to review, and a page opens
+with each held value beside the sentence it came from. Ruling on a few dozen is what lets the
+bar be set from your own judgement instead of a guess.
+
 ## What we'd love to hear
 
 Send AP a message with any of these, even one line:

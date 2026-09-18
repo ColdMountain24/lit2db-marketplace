@@ -337,6 +337,39 @@ def _field(name, value, quote):
             "provenance": {"source_id": "PMC111", "verbatim_quote": quote}}
 
 
+def test_calibrate_reports_and_refuses_to_pick_a_bar(tmp_path):
+    """Confirming candidates is the calibration set (calibration.py). This is the path from a
+    project folder to that table, and like the module it reports without choosing."""
+    _fetched(tmp_path)
+    db = str(project.paths(tmp_path)["db"])
+    for rid, comp, verdict, judge in (("r1", 0.9, "right", "supported"),
+                                      ("r2", 0.5, "wrong", "partial"),
+                                      ("r3", 0.9, "cant_tell", "supported")):
+        rec = {"record_id": rid, "entity_type": "widget",
+               "fields": [_field("widget_name", rid, "q")]}
+        output.record_candidate(rec, comp, {"decision": "deny", "reasons": ["x"],
+                                            "judge_verdict": judge}, db, "PMC111")
+        output.record_adjudication(rid, "PMC111", verdict, db)
+
+    out = project.calibrate(tmp_path)
+    assert out["reviewed"] == 3
+    assert out["verdicts"] == {"right": 1, "wrong": 1, "cant_tell": 1}
+    bars = {b["bar"]: b for b in out["frontier"]}
+    assert bars[0.9]["n"] == 1 and bars[0.9]["precision"] == 1.0, (
+        "cant_tell is held out of the denominator, never counted as wrong")
+    assert bars[0.5]["n"] == 2 and bars[0.5]["precision"] == 0.5
+    assert "yours to ratify" in out["note"]
+
+
+def test_calibrate_says_what_to_do_when_nothing_has_been_reviewed(tmp_path):
+    _fetched(tmp_path)
+    project.paths(tmp_path)["db"].parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3
+    sqlite3.connect(str(project.paths(tmp_path)["db"])).close()
+    out = project.calibrate(tmp_path)
+    assert out["reviewed"] == 0 and "judge-supported" in out["next"]
+
+
 def test_export_writes_all_three_tiers_with_quotes(tmp_path):
     _fetched(tmp_path)
     db = str(project.paths(tmp_path)["db"])

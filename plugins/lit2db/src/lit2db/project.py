@@ -421,6 +421,45 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
             "identity": cfg["identity_fields"][entity_type]}
 
 
+def calibrate(root: str | pathlib.Path = ".") -> dict:
+    """What the researcher's own verdicts say about where the bar could sit. It never sets one.
+
+    Confirming candidates is work a researcher was going to do anyway, and `record_adjudication`
+    keeps it. This reads those verdicts back joined to the signals the gate had, and reports
+    precision per bucket plus precision and yield at every threshold the observed scores can
+    actually take. Choosing the operating point is a promise to whoever uses the database about
+    how wrong it may be, so it stays the researcher's to ratify (`calibration.py`), and
+    `cant_tell` is held out of every denominator rather than counted as wrong.
+    """
+    from .calibration import frontier, render, table
+    from .output import adjudications
+    p = paths(root)
+    if not p["db"].exists():
+        raise ValueError(f"no database at {p['db']}; nothing has been reviewed yet")
+    adj = adjudications(str(p["db"]))
+    rows = adj["adjudications"]
+    if not rows:
+        return {"reviewed": 0,
+                "next": "Nothing has been reviewed yet. `project.py review --focus "
+                        "judge-supported` puts the sharpest records in front of you first."}
+    by_judge = table(rows, lambda r: r.get("judge_verdict") or "not_run")
+    by_fields = table(rows, lambda r: r.get("n_populated_fields", 0))
+    bars = frontier(rows, lambda r: r.get("composite_confidence"))
+    return {
+        "reviewed": len(rows), "verdicts": adj.get("counts", {}),
+        "by_surface": adj.get("by_surface", {}),
+        "tables": {"by_judge_verdict": render(by_judge, "judge verdict"),
+                   "by_fields_populated": render(by_fields, "fields populated"),
+                   "by_threshold": render(bars, "accept bar")},
+        "frontier": [{"bar": b["bar"], "precision": b["precision"], "n": b["n_verifiable"],
+                      "ci95": b["ci95"], "kept": b["n_accepted"],
+                      "kept_fraction": b["kept_fraction"]} for b in bars],
+        "note": ("This reports; it does not choose. Where the bar sits is a promise about how "
+                 "wrong the database may be, and it is yours to ratify. Records answered "
+                 "'cant tell' are held out of every denominator and counted separately."),
+    }
+
+
 def _field_columns(payload: dict) -> dict:
     row = {}
     for f in payload.get("fields") or []:

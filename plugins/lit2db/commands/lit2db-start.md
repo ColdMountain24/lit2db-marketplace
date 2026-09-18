@@ -210,5 +210,22 @@ and tell them where the three spreadsheets are, in this order, with the count in
 but not accepted, each with its quote and the reason), `accepted.csv` (what cleared the bar).
 Then hand off to `/lit2db-status`.
 
+## 7 — The accepted table will be small, and the way out of that is their own eyes
+
+Say this plainly rather than apologising for it: the accept bar ships as a conservative
+placeholder, so a first run accepts little and holds the rest with its evidence attached. The
+researcher moves it by ruling on records, not by us picking a number.
+
+```bash
+project.py review           # the page, focused on the sharpest records (see below)
+project.py calibrate        # what their verdicts say about where the bar could sit
+```
+
+`review` opens on the records **the fact-checker read the source for and called supported, while
+the gate still refused them**. Both sides of that disagreement are already argued, so each one is
+a fast answer and a strong label. `calibrate` then reports precision and yield at every bar the
+scores can actually take, with sample sizes and intervals, and **picks nothing**: where the bar
+sits is a promise about how wrong the database may be, and it is theirs to ratify.
+
 The one thing that never floats: a record that fails verification is not written. That is not a
 setting, and it is what makes the rest of it worth anything.

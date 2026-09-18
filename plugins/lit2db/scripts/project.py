@@ -12,6 +12,8 @@ Run it through the launcher so the interpreter is one that can import the plugin
             [--identity-chain A+B A ...] [--ordinal-within F] [--force]
                                      write lit2db/run.json and the prompts, then check them
     run     [--dry-run] [--limit N]  run the pipeline (long; resumable at the paper boundary)
+    review  [--focus judge-supported] open the review page on this project, beside the papers
+    calibrate                        what your own verdicts say about where the bar could sit
     export                           lit2db/results/{papers,candidates,accepted}.csv
     where                            print the project layout
 
@@ -89,6 +91,15 @@ def main(argv=None) -> int:
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--limit", type=int)
 
+    s = sub.add_parser("review")
+    s.add_argument("--focus", default="judge-supported",
+                   choices=["judge-supported", "all"],
+                   help="judge-supported (the default): only records the fact-checker backed "
+                        "and the gate still refused, which is the sharpest calibration seed")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--all", action="store_true", help="include records already ruled on")
+
+    sub.add_parser("calibrate")
     sub.add_parser("export")
     sub.add_parser("where")
 
@@ -127,6 +138,19 @@ def main(argv=None) -> int:
             if a.limit:
                 cmd += ["--limit", str(a.limit)]
             return subprocess.call(cmd)
+        elif a.step == "review":
+            pa = project.paths(a.root)
+            cmd = [sys.executable, str(HERE / "review_ui.py"), "--db", str(pa["db"]),
+                   "--sources", str(pa["sources"]), "--port", str(a.port),
+                   "--focus", a.focus]
+            if a.all:
+                cmd.append("--all")
+            return subprocess.call(cmd)
+        elif a.step == "calibrate":
+            out = project.calibrate(a.root)
+            for name, block in (out.pop("tables", None) or {}).items():
+                print(f"\n{name.replace('_', ' ')}\n{block}")
+            print()
         elif a.step == "export":
             out = project.export(a.root)
         else:

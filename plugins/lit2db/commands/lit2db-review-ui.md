@@ -9,8 +9,13 @@ Start it and hand over:
 
 ```bash
 sh "${CLAUDE_PLUGIN_ROOT}/bin/lit2db-python" "${CLAUDE_PLUGIN_ROOT}/scripts/review_ui.py" \
-    --db <their.db> --sources <their stores>
+    --db <their.db> --sources <their stores> [--focus judge-supported]
 ```
+
+`--focus judge-supported` shows only the records the adversarial judge read the source for and
+called SUPPORTED while the gate refused them anyway. Start there when the goal is calibration
+rather than curation: both sides are already argued, so each answer is quick and each label is
+worth more. Measured on the first BBB wave, that was 21 of 56 records.
 
 With no database it builds a small demo and says so, so the page always opens onto something.
 `--port` if 8765 is taken, `--all` to revisit records they have already ruled on.
