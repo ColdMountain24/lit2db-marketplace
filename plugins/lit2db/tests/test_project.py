@@ -277,6 +277,41 @@ def test_replanning_never_silently_restores_what_someone_fixed_by_hand(tmp_path)
     assert kept["identity_fields"]["widget"]["chain"] == [["widget_name", "basis"]]
 
 
+def test_a_normalized_field_can_be_grounded_on_its_evidence(tmp_path):
+    """From the first BBB wave: species "mouse" against a quote reading "mice", unit "%/g"
+    against "2%ID/g", a molecule key that is a slug. All correct, all scored 0 by a substring
+    test, and the weakest link in 42 of 50 records."""
+    _fetched(tmp_path)
+    cfg = json.loads(pathlib.Path(
+        _plan(tmp_path, evidence_grounded=["widget_name"])["config"]).read_text())
+    assert cfg["evidence_grounded_fields"] == ["basis", "widget_name"], "enums stay automatic"
+    with pytest.raises(ValueError, match="nobody ratified"):
+        _plan(tmp_path, evidence_grounded=["not_a_field"], force=True)
+
+
+def test_a_field_ratified_as_never_auto_acceptable_is_kept_out_of_the_record_score(tmp_path):
+    """`auto_acceptable=False` means human-review output by design. Scoring a record as its
+    weakest field while including one of those holds down every record that carries it."""
+    spec = _spec()
+    spec.fields[1].auto_acceptable = False
+    _write_spec(tmp_path, spec)
+    project.fetch(tmp_path, limit=10, allow_abstracts=True, get=FakeEPMC(), pause=0)
+    cfg = json.loads(pathlib.Path(_plan(tmp_path)["config"])
+                     .read_text())
+    assert cfg["review_lane"] == ["basis"]
+
+
+def test_grounding_mode_is_lexical_unless_asked_and_only_takes_the_two_it_supports(tmp_path):
+    _fetched(tmp_path)
+    assert json.loads(pathlib.Path(_plan(tmp_path)["config"]).read_text())[
+        "grounding_mode"] == "lexical"
+    cfg = json.loads(pathlib.Path(
+        _plan(tmp_path, grounding_mode="llm", force=True)["config"]).read_text())
+    assert cfg["grounding_mode"] == "llm" and cfg["grounding_model"]
+    with pytest.raises(ValueError, match="lexical"):
+        _plan(tmp_path, grounding_mode="fuzzy", force=True)
+
+
 def test_plan_refuses_an_identity_field_nobody_ratified(tmp_path):
     _fetched(tmp_path)
     with pytest.raises(ValueError, match="not a ratified field"):

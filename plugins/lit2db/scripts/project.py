@@ -67,6 +67,15 @@ def main(argv=None) -> int:
     s.add_argument("--ordinal-within", nargs="+", default=[], metavar="FIELD",
                    help="scope inside which records nothing identified may be aligned by order "
                         "of appearance. Without it such records stay singletons.")
+    s.add_argument("--evidence-grounded", nargs="+", default=[], metavar="FIELD",
+                   help="ratified fields whose value is NORMALIZED rather than copied from the "
+                        "paper (a unit, a key, a species name): they are grounded on their "
+                        "anchored quote instead of by a substring test, which scores a correct "
+                        "normalized value 0. Enum fields are included automatically.")
+    s.add_argument("--grounding-mode", choices=("lexical", "llm"), default="lexical",
+                   help="lexical: the value must appear in its quote. llm: a model reads the "
+                        "quote and says whether it supports the value (costs a call per value).")
+    s.add_argument("--grounding-model", default="sonnet")
     s.add_argument("--force", action="store_true",
                    help="overwrite a run.json that was edited by hand (keeps run.json.bak)")
     s.add_argument("--models", nargs="+", required=True)
@@ -100,6 +109,9 @@ def main(argv=None) -> int:
                                auto_accept_threshold=a.threshold,
                                min_populated_fields=a.min_fields,
                                identity_chain=chain, ordinal_within=a.ordinal_within,
+                               evidence_grounded=a.evidence_grounded,
+                               grounding_mode=a.grounding_mode,
+                               grounding_model=a.grounding_model,
                                force=a.force, plugin_version=_version())
             dry = subprocess.run([sys.executable, str(HERE / "run_wave.py"), "--config",
                                   out["config"], "--dry-run"], capture_output=True, text=True)

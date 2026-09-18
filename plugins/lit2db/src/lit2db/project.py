@@ -299,6 +299,8 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
          models: list, judge_model: str, hunter_model: str, judge_audit_fraction: float,
          auto_accept_threshold: float = 0.95, min_populated_fields: int = 0,
          identity_chain: Optional[list] = None, ordinal_within: Optional[list] = None,
+         evidence_grounded: Optional[list] = None, grounding_mode: str = "lexical",
+         grounding_model: str = "sonnet",
          force: bool = False, plugin_version: str = "") -> dict:
     """Write the prompts and `run.json` for this project. Decides nothing about the science.
 
@@ -321,6 +323,12 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
         raise ValueError("no extraction models given")
     tiers = [list(t) for t in (identity_chain or [[identity_field]])]
     identity = _identity_declaration(tiers, ordinal_within or [], names)
+    unknown = [f for f in (evidence_grounded or []) if f not in names]
+    if unknown:
+        raise ValueError(f"--evidence-grounded names fields nobody ratified: {unknown}")
+    if grounding_mode not in ("lexical", "llm"):
+        raise ValueError("grounding_mode is 'lexical' (a substring test) or 'llm' (a model "
+                         "reads the quote and says whether it supports the value)")
     papers = readable_sources(root)
     if not papers:
         raise ValueError("no readable papers are stored yet; run fetch first")
@@ -380,7 +388,24 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
         # Every enum field is grounded on its anchored evidence instead. Derived from the ratified
         # field TYPES, so it adds nothing. Measured on the first clean-room run: without it all
         # ten records scored 0.3 on a unanimous, correctly quoted label.
-        "evidence_grounded_fields": [f.name for f in spec.fields if f.enum],
+        #
+        # ENUMS ARE NOT THE ONLY VALUES A PAPER DOES NOT SPELL. Measured on the first BBB wave
+        # (2026-09-18): `species = "mouse"` against a quote reading "mice", `penetration_unit =
+        # "%/g"` against "2%ID/g", `molecule_key` a slug appearing nowhere. All correct, all
+        # scored 0.0, and they were the weakest link in 42 of 50 records. Which fields are
+        # normalized rather than transcribed is a fact about the schema that only the researcher
+        # can state, so it arrives as an argument; `grounding_mode="llm"` is the other answer,
+        # where a model judges support instead of a substring test (D-110/D-112).
+        "evidence_grounded_fields": sorted({f.name for f in spec.fields if f.enum}
+                                           | set(evidence_grounded or [])),
+        "grounding_mode": grounding_mode,
+        "grounding_model": grounding_model,
+        # A field the researcher ratified as never-auto-acceptable is HUMAN-REVIEW OUTPUT BY
+        # DESIGN, so it is scored and shown but kept out of the record composite, which is the
+        # weakest link among the fields the record will be written with. Without this, one
+        # prose field holds down every record carrying it and the yield reads as a broken
+        # pipeline (contracts/spec.py, `auto_acceptable`).
+        "review_lane": [f.name for f in spec.fields if not f.auto_acceptable],
         # The structure and taxon lookups key on field NAMES from one earlier project. Off unless
         # this spec happens to use those names, so a stranger's run never calls a chemistry API.
         "resolve_structures": "compound_name" in names,
