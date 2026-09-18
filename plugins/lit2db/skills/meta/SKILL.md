@@ -134,22 +134,28 @@ Rules for the writing, all of them load-bearing:
 
 ## Step 4 — append to the log
 
+A researcher's project folder is usually **not** a git repo — `lit2db/` is working data, not
+history. The dated meta is written there because it describes that run, and a copy goes to the
+**plugin repo**, which is the thing that gets improved and pushed:
+
 ```bash
-mkdir -p lit2db/meta
+mkdir -p "${CLAUDE_PLUGIN_ROOT}/meta"
+cp lit2db/meta/<file> "${CLAUDE_PLUGIN_ROOT}/meta/"
 # index entry, newest first
-printf -- "- [%s](%s) — %s\n" "<date>" "<file>" "<one-line verdict>" >> lit2db/meta/META_LOG.md
+printf -- "- [%s](%s) — %s\n" "<date>" "<file>" "<one-line verdict>" \
+  >> "${CLAUDE_PLUGIN_ROOT}/meta/META_LOG.md"
+git -C "${CLAUDE_PLUGIN_ROOT}" add meta && git -C "${CLAUDE_PLUGIN_ROOT}" commit -m "meta: <date> <slug>"
 ```
 
-`META_LOG.md` is an index of one-line pointers, never a place for content — the content lives
-in the dated file. Then commit both, so the log is the repo's memory rather than one machine's:
+`META_LOG.md` is an index of one-line pointers, never a place for content — the content lives in
+the dated file. Keeping the log in the plugin repo is the point: a lesson from one project is
+only worth writing down because the next project inherits it.
 
-```bash
-git add lit2db/meta && git commit -m "meta: <date> <slug>"
-```
-
-Do not commit `database.db`, `lit2db/corpus/`, `lit2db/run/` or `lit2db/env.sh` — the last one
-holds a contact address, and the others are large, regenerable, and in the case of `corpus/`
-hold licensed full text that must not be redistributed.
+Never commit `database.db`, `lit2db/corpus/`, `lit2db/run/` or `lit2db/env.sh` — the last holds a
+contact address, and the others are large, regenerable, and in `corpus/`'s case hold licensed
+full text that must not be redistributed. **Read the meta before committing it:** run artifacts
+can carry verbatim quotes from paywalled sources, and a post-mortem is not a place to republish
+them. Quote the pipeline's own log lines, not the papers.
 
 ## What this skill must not do
 
