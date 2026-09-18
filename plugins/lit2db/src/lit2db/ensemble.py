@@ -28,6 +28,7 @@ Deliberately STDLIB-ONLY, same constraint as `lit2db.gate` and `lit2db.accountin
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import statistics
 import unicodedata
@@ -550,6 +551,7 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
         indexed.append(idx)
 
     merged, report = [], {}
+    merged_idents = []
     for key in keys:
         etype, ident = key
         present = [idx.get(key) for idx in indexed]
@@ -600,6 +602,9 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
             seed = next(r for r in present if r is not None)
             rec_out = {"record_id": seed.get("record_id"), "entity_type": etype,
                        "fields": list(out_fields.values())}
+            # Carried only as far as the disambiguation pass below, then stripped: it must
+            # never reach a payload, because it is alignment bookkeeping and not a field.
+            merged_idents.append(ident)
 
             # A RECORD-LEVEL REVIEW FLAG CARRIES ON ANY VOTE, NOT A MAJORITY — and the
             # asymmetry is the point. Field VALUES need agreement because the ensemble is
@@ -616,6 +621,31 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
                     str(r.get("review_reason") or "unstated") for r in flagged})
                 rec_out["review_flagged_by_passes"] = len(flagged)
             merged.append(rec_out)
+
+    # A MERGED RECORD IS NAMED BY THE SEED PASS'S record_id, WHICH IS A PER-PAPER ORDINAL —
+    # so the pool of available names is however many records ONE pass happened to emit, while
+    # the number of merged records is however many distinct identities the chain resolved.
+    # Those are different numbers the moment an entity type is finer-grained than the
+    # extractor's numbering, and then ids repeat.
+    #
+    # That is not cosmetic. `records` is `record_id TEXT PRIMARY KEY` and `candidates` is
+    # `PRIMARY KEY (record_id, source_id)`, both written with INSERT OR REPLACE, so two merged
+    # records sharing a name store as ONE ROW and the loss is silent. Measured on PMC13532014
+    # at measurement grain (one row per molecule x measurement): 6 merged, 6 scored, 3 stored.
+    #
+    # The suffix is a hash of the IDENTITY, not a counter, so it is stable across re-runs,
+    # resumes and replays regardless of the order `keys` came out in — a positional counter
+    # would rename records whenever the merge order shifted, and a renamed record silently
+    # becomes a different row in the database. The readable seed id is kept as the prefix so
+    # judge prompts and on-disk artifact names still point back at what the extractor called it.
+    seen = {}
+    for rid in (r["record_id"] for r in merged):
+        seen[rid] = seen.get(rid, 0) + 1
+    for rec_out, ident in zip(merged, merged_idents):
+        if seen.get(rec_out["record_id"], 0) > 1:
+            h = hashlib.sha1(str(ident).encode("utf-8")).hexdigest()[:8]
+            rec_out["record_id"] = f"{rec_out['record_id']}#{h}"
+            rec_out["record_id_disambiguated_from_identity"] = str(ident)
 
     return {"records": merged, "ensemble": report, "k": k,
             "alignment": [{"entity_type": e, "identity": i,
