@@ -235,6 +235,48 @@ def test_enum_fields_are_grounded_on_evidence_not_by_substring(tmp_path):
     assert cfg["evidence_grounded_fields"] == ["basis"]
 
 
+def test_a_measurement_grain_project_can_state_its_identity_chain(tmp_path):
+    """From the first BBB wave (2026-09-18). A bare identity means "one row per named thing",
+    so a project whose row is a measurement collapsed every measurement of one molecule into
+    one row: 3 records where 6 belonged, from the same three passes."""
+    _fetched(tmp_path)
+    out = _plan(tmp_path, identity_chain=[["widget_name", "basis"], ["widget_name"]],
+                ordinal_within=["widget_name"])
+    assert out["identity"] == {"chain": [["widget_name", "basis"], "widget_name"],
+                               "ordinal_within": ["widget_name"]}
+    cfg = json.loads(pathlib.Path(out["config"]).read_text())
+    assert cfg["identity_primary"] == "widget_name", "the chain does not change what names a row"
+
+
+def test_an_identity_tier_naming_an_unratified_field_is_refused(tmp_path):
+    _fetched(tmp_path)
+    with pytest.raises(ValueError, match="nobody ratified"):
+        _plan(tmp_path, identity_chain=[["widget_name", "dose"]])
+
+
+def test_replanning_never_silently_restores_what_someone_fixed_by_hand(tmp_path):
+    """The identity chain had to be hand-written into run.json on the first BBB wave, and
+    re-running plan would have put the collapsing version back with nothing said."""
+    _fetched(tmp_path)
+    cfg_path = pathlib.Path(_plan(tmp_path)["config"])
+    _plan(tmp_path)                                   # untouched: re-plans without ceremony
+
+    cfg = json.loads(cfg_path.read_text())
+    cfg["identity_fields"]["widget"] = {"chain": [["widget_name", "basis"]],
+                                        "ordinal_within": ["widget_name"]}
+    cfg_path.write_text(json.dumps(cfg))
+
+    with pytest.raises(ValueError, match="edited since plan wrote it"):
+        _plan(tmp_path)
+    assert json.loads(cfg_path.read_text())["identity_fields"]["widget"] != "widget_name"
+
+    _plan(tmp_path, force=True)
+    assert json.loads(cfg_path.read_text())["identity_fields"]["widget"] == {
+        "chain": ["widget_name"], "ordinal_within": []}
+    kept = json.loads((cfg_path.parent / "run.json.bak").read_text())
+    assert kept["identity_fields"]["widget"]["chain"] == [["widget_name", "basis"]]
+
+
 def test_plan_refuses_an_identity_field_nobody_ratified(tmp_path):
     _fetched(tmp_path)
     with pytest.raises(ValueError, match="not a ratified field"):

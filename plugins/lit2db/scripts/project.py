@@ -9,6 +9,7 @@ Run it through the launcher so the interpreter is one that can import the plugin
     fetch   --limit N [--abstracts]  run the RATIFIED query from lit2db/spec.json, store papers
     plan    --entity-type T --identity F --models M [M ...] --judge-model J --hunter-model H
             --audit-fraction X [--threshold 0.95] [--min-fields N]
+            [--identity-chain A+B A ...] [--ordinal-within F] [--force]
                                      write lit2db/run.json and the prompts, then check them
     run     [--dry-run] [--limit N]  run the pipeline (long; resumable at the paper boundary)
     export                           lit2db/results/{papers,candidates,accepted}.csv
@@ -59,6 +60,15 @@ def main(argv=None) -> int:
     s = sub.add_parser("plan")
     s.add_argument("--entity-type", required=True)
     s.add_argument("--identity", required=True, help="the ratified field that identifies a record")
+    s.add_argument("--identity-chain", nargs="+", metavar="TIER",
+                   help="identity tiers tried in order, each one or more ratified fields joined "
+                        "by '+': --identity-chain molecule+dose+metric molecule+metric molecule. "
+                        "Use this whenever one named thing can carry several rows.")
+    s.add_argument("--ordinal-within", nargs="+", default=[], metavar="FIELD",
+                   help="scope inside which records nothing identified may be aligned by order "
+                        "of appearance. Without it such records stay singletons.")
+    s.add_argument("--force", action="store_true",
+                   help="overwrite a run.json that was edited by hand (keeps run.json.bak)")
     s.add_argument("--models", nargs="+", required=True)
     s.add_argument("--judge-model", required=True)
     s.add_argument("--hunter-model", required=True)
@@ -82,12 +92,15 @@ def main(argv=None) -> int:
         elif a.step == "fetch":
             out = project.fetch(a.root, limit=a.limit, allow_abstracts=a.abstracts, get=get)
         elif a.step == "plan":
+            chain = [tier.split("+") for tier in (a.identity_chain or [])] or None
             out = project.plan(a.root, entity_type=a.entity_type, identity_field=a.identity,
                                models=a.models, judge_model=a.judge_model,
                                hunter_model=a.hunter_model,
                                judge_audit_fraction=a.audit_fraction,
                                auto_accept_threshold=a.threshold,
-                               min_populated_fields=a.min_fields, plugin_version=_version())
+                               min_populated_fields=a.min_fields,
+                               identity_chain=chain, ordinal_within=a.ordinal_within,
+                               force=a.force, plugin_version=_version())
             dry = subprocess.run([sys.executable, str(HERE / "run_wave.py"), "--config",
                                   out["config"], "--dry-run"], capture_output=True, text=True)
             out["preflight_ok"] = dry.returncode == 0

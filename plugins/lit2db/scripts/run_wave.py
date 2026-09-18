@@ -52,6 +52,7 @@ import json
 import math
 import pathlib
 import re
+import os
 import subprocess
 import sys
 import threading
@@ -161,6 +162,43 @@ def _resolve_structures_for(scored: list, cfg: dict, pdir: pathlib.Path) -> None
 # Talking to the model
 # ---------------------------------------------------------------------------------------
 _LIMIT_RE = re.compile(r"(usage limit|rate.?limit|resets? at|try again)", re.I)
+# A CREDENTIAL FAILURE IS NOT TRANSIENT, AND RETRYING ONE IS WORSE THAN STOPPING. Measured on
+# the first BBB wave (2026-09-18): 171 consecutive "Credit balance is too low" retries across 19
+# papers, recovering nothing. It also misnames itself — it reads as "top up your account", and
+# topping up would have worked while leaving the real cause (the run was billed to an API key at
+# all) untouched.
+_CREDENTIAL_RE = re.compile(
+    r"(credit balance is too low|invalid x-api-key|authentication_error|"
+    r"oauth token (has )?expired|please run /login)", re.I)
+# Variables that redirect a spawned `claude` away from the subscription the researcher is signed
+# in with. Stripped from the child environment unless the config asks for them (see `child_env`).
+_BILLING_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+# Set once in main(), from the config. None means inherit, which only happens in
+# tests that call `call_agent` directly.
+_CHILD_ENV = None
+
+
+class CredentialFailure(RuntimeError):
+    """The run cannot authenticate. Stops the wave, like the fuse, rather than per paper."""
+
+
+def child_env(cfg: dict, environ: dict) -> dict:
+    """The environment every spawned `claude` gets.
+
+    WHY THIS IS NOT `os.environ`. `subprocess.run` with no `env=` hands the child whatever
+    credential happens to be ambient in the shell. On the first BBB wave that was
+    `ANTHROPIC_API_KEY`, set for unrelated tools, so a 20-paper run metered against a credit
+    balance and died after one paper while the researcher's Claude subscription sat unused.
+    Nothing in the run said which account it was spending, which is what made it cost a wave to
+    find. Default is the signed-in subscription; `"bill_to_api_key": true` in the config is how
+    a researcher chooses the other one, deliberately and in writing.
+    """
+    env = dict(environ)
+    if cfg.get("bill_to_api_key"):
+        return env
+    for var in _BILLING_VARS:
+        env.pop(var, None)
+    return env
 _RESET_RE = re.compile(r"resets? at ([0-9]{1,2}):([0-9]{2})\s*(am|pm)?", re.I)
 
 
@@ -206,7 +244,7 @@ def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
     for attempt in range(1, retries + 1):
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=timeout, cwd=str(cwd))
+                               timeout=timeout, cwd=str(cwd), env=_CHILD_ENV)
         except subprocess.TimeoutExpired:
             # A TIMEOUT IS NOT RETRIED. This is the real fix for the hang v0.30.0 responded to.
             # Measured: one Sonnet pass hit the 1800s timeout, and with retries=3 that single
@@ -240,6 +278,8 @@ def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
                     "work_tokens": norm["input"] + norm["output"], "streams": dict(norm),
                     "attempts": attempt}
         last = blob.strip()[-400:]
+        if _CREDENTIAL_RE.search(blob):
+            raise CredentialFailure(last)
         if _LIMIT_RE.search(blob):
             nap = _seconds_until_reset(blob, backoff)
             log(f"    {label}: usage limit — sleeping {nap // 60}m, then retrying")
@@ -661,6 +701,12 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                              duplicate_record_ids=pick["duplicate_record_ids"])
     log(f"{paper}: {written}/{len(scored)} written, {len(qs)} question(s), "
         f"{time.time() - t0:.0f}s")
+    # BESIDE THE PAPER, NOT ONLY IN MEMORY. The catalogue is rewritten whole on every manifest
+    # write, and a resumed leg carries finished papers from `scored.json`, which never held
+    # their questions — so the second leg of a wave would truncate away everything the first
+    # leg asked. A question is a fact about a paper; it belongs in that paper's directory, and
+    # a re-scored paper replaces its own file rather than adding to it.
+    (pdir / "questions.json").write_text(json.dumps(qs, indent=1) + "\n")
     return {"paper": paper, "status": "done", "n_records": len(scored), "n_written": written,
             "failures": failures, "dropped": dropped, "questions": qs,
             "judge_scope": judge_scope}
@@ -680,10 +726,14 @@ def _recover_done(out: pathlib.Path, paper: str) -> dict | None:
     except (json.JSONDecodeError, OSError):
         return None
     gate = d.get("gate", [])
+    try:
+        questions = json.loads((out / paper / "questions.json").read_text())
+    except (json.JSONDecodeError, OSError):
+        questions = []                      # a paper scored before questions were persisted
     return {"paper": paper, "status": "done", "carried_from_disk": True,
             "n_records": len(d.get("records", [])),
             "n_written": sum(bool((g.get("gate") or {}).get("written")) for g in gate),
-            "failures": [], "dropped": [], "questions": []}
+            "failures": [], "dropped": [], "questions": questions}
 
 
 # ---------------------------------------------------------------------------------------
@@ -886,6 +936,15 @@ def main() -> int:
         log("DRY RUN — no model calls made")
         return 0
 
+    global _CHILD_ENV
+    _CHILD_ENV = child_env(cfg, os.environ)
+    stripped = [v for v in _BILLING_VARS if v in os.environ and v not in _CHILD_ENV]
+    log("billing: " + ("an API key, as this config asked (`bill_to_api_key`)"
+                       if cfg.get("bill_to_api_key") else
+                       "the Claude subscription this machine is signed in with"
+                       + (f"; {', '.join(stripped)} is set in the shell and is NOT passed to the "
+                          f"run" if stripped else "")))
+
     wait_for_offpeak(a.start_hour)
     results, questions = list(carried), []
     # PAPER-LEVEL CONCURRENCY BUYS WALL-CLOCK, NOT TOKENS. Token cost is calls x per-call
@@ -913,6 +972,13 @@ def main() -> int:
                                     complete=False)
     except FuseExceeded as exc:
         log(f"FUSE TRIPPED — {exc}")
+    except CredentialFailure as exc:
+        log(f"STOPPED — the model could not be reached with these credentials: {exc}")
+        log("Nothing is retried on this: every call would fail the same way. Every finished "
+            "paper is on disk and re-running resumes. If this says the credit balance is low, "
+            "check WHICH account is being billed before topping anything up: by default this "
+            "run uses the subscription you are signed in with, and `bill_to_api_key` in the "
+            "config is the only thing that changes that.")
     except KeyboardInterrupt:
         log("interrupted — progress is on disk, re-run to resume")
 
@@ -920,7 +986,7 @@ def main() -> int:
     done = [r for r in results if r["status"] == "done"]
     log(f"WAVE END: {len(done)} papers, "
         f"{sum(r['n_written'] for r in done)} records written, "
-        f"{len(questions)} questions catalogued")
+        f"{len({json.dumps(q, sort_keys=True) for q in questions})} questions catalogued")
     if questions:
         log("Answer the catalogue before starting the next wave — see QUESTIONS.jsonl")
     return 0
@@ -1019,8 +1085,19 @@ def _write_manifest(out, cfg, papers, results, questions, fuse, *, complete):
            if prior else {}),
         "fuse": fuse.snapshot(), "per_paper": results,
     }, indent=1) + "\n")
+    # DISTINCT, and current per paper. The same paper scored twice (after a fix, say) must not
+    # have both readings standing in the catalogue: its `questions.json` is replaced, and this
+    # is written from the papers, so what a researcher counts is open questions rather than run
+    # history. Deduplicated on the whole entry, since two papers can legitimately raise the
+    # same kind of question.
+    seen, distinct = set(), []
+    for q in questions:
+        key = json.dumps(q, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            distinct.append(q)
     with (out / "QUESTIONS.jsonl").open("w") as fh:
-        for q in questions:
+        for q in distinct:
             fh.write(json.dumps(q) + "\n")
 
 

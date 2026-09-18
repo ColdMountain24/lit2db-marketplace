@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import hashlib
 import json
 import pathlib
 import ssl
@@ -262,15 +263,52 @@ def readable_sources(root: str | pathlib.Path = ".") -> list:
     return out
 
 
+VOLATILE = ("_generated_at", "_generated_hash", "run_timestamp")
+
+
+def _config_hash(cfg: dict) -> str:
+    """A fingerprint of everything in a config except the parts that move every time it is
+    written. It is how `plan` tells its own last output from a researcher's edits."""
+    stable = {k: v for k, v in cfg.items() if k not in VOLATILE}
+    return hashlib.sha256(json.dumps(stable, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _identity_declaration(tiers: list, ordinal_within: list, names: set) -> dict:
+    """The ratified identity chain, in the shape `merge_passes` reads.
+
+    A BARE FIELD NAME IS A STATEMENT ABOUT GRAIN, not a shortcut. `ensemble._identify` treats a
+    chain with no `ordinal_within` as "this entity type has at most one record per identity", so
+    a project whose row is a MEASUREMENT and whose identity is the molecule silently collapses
+    every measurement of one molecule into one row. Measured on the first BBB wave
+    (2026-09-18, PMC13532014): the same three passes merged to 3 records under a bare identity
+    and 6 once the chain was written out.
+    """
+    for tier in tiers:
+        unknown = [f for f in tier if f not in names]
+        if unknown:
+            raise ValueError(f"identity tier {'+'.join(tier)} names fields nobody ratified: "
+                             f"{unknown} (ratified: {sorted(names)})")
+    unknown = [f for f in ordinal_within if f not in names]
+    if unknown:
+        raise ValueError(f"--ordinal-within names fields nobody ratified: {unknown}")
+    chain = [t[0] if len(t) == 1 else list(t) for t in tiers]
+    return {"chain": chain, "ordinal_within": list(ordinal_within)}
+
+
 def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: str,
          models: list, judge_model: str, hunter_model: str, judge_audit_fraction: float,
          auto_accept_threshold: float = 0.95, min_populated_fields: int = 0,
-         plugin_version: str = "") -> dict:
+         identity_chain: Optional[list] = None, ordinal_within: Optional[list] = None,
+         force: bool = False, plugin_version: str = "") -> dict:
     """Write the prompts and `run.json` for this project. Decides nothing about the science.
 
     Every argument without a default is a choice the researcher ratifies, which is why there is
     no default for the audit fraction (D-081) or the models. `auto_accept_threshold` keeps the
     shipped conservative placeholder, and says so in the config.
+
+    `identity_chain` is a list of tiers, each a list of ratified field names, tried in order;
+    `ordinal_within` is the scope inside which unidentified records may be aligned by position.
+    Together they are how a project states a row grain finer than one row per named thing.
     """
     from .spec_context import load_spec
     p = paths(root)
@@ -281,9 +319,29 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
                          f"(ratified: {sorted(names)})")
     if not models:
         raise ValueError("no extraction models given")
+    tiers = [list(t) for t in (identity_chain or [[identity_field]])]
+    identity = _identity_declaration(tiers, ordinal_within or [], names)
     papers = readable_sources(root)
     if not papers:
         raise ValueError("no readable papers are stored yet; run fetch first")
+
+    # DO NOT SILENTLY RESTORE WHAT SOMEONE FIXED BY HAND. On the first BBB wave the identity
+    # chain had to be hand-written into `run.json`, and re-running `plan` would have put the
+    # collapsing single-field identity back with nothing said. A config this function wrote and
+    # nobody touched carries its own fingerprint and is replaced without ceremony; an edited one
+    # stops here, names what differs, and needs `--force` (which keeps a `.bak`).
+    if p["config"].exists():
+        previous = json.loads(p["config"].read_text(encoding="utf-8"))
+        edited = previous.get("_generated_hash") != _config_hash(previous)
+        if edited and not force:
+            raise ValueError(
+                f"{p['config']} has been edited since plan wrote it. Re-planning would "
+                f"overwrite those edits. Pass them as arguments instead (identity chains go in "
+                f"--identity-chain and --ordinal-within), or re-run with --force, which keeps a "
+                f"copy at run.json.bak.")
+        if edited:
+            (p["config"].with_suffix(".json.bak")).write_text(
+                json.dumps(previous, indent=1), encoding="utf-8")
 
     p["prompts"].mkdir(parents=True, exist_ok=True)
     for name in ("extract", "judge", "hunter"):
@@ -312,7 +370,7 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
         "_threshold_note": ("UNCALIBRATED conservative placeholder unless the researcher set it "
                             "from their own reviewed records."),
         "min_populated_fields": min_populated_fields,
-        "identity_fields": {entity_type: identity_field},
+        "identity_fields": {entity_type: identity},
         "identity_primary": identity_field,
         "wave": "run",
         "run_timestamp": _now(),
@@ -332,8 +390,10 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
         # the 183-paper wave, so an honest run never trips it.
         "fuse": {"max_calls": 30 * n, "max_tokens": 400_000 * n},
     }
+    cfg["_generated_hash"] = _config_hash(cfg)
     p["config"].write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-    return {"config": str(p["config"]), "papers": n}
+    return {"config": str(p["config"]), "papers": n,
+            "identity": cfg["identity_fields"][entity_type]}
 
 
 def _field_columns(payload: dict) -> dict:

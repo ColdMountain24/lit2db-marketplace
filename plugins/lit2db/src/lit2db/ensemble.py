@@ -602,8 +602,9 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
             seed = next(r for r in present if r is not None)
             rec_out = {"record_id": seed.get("record_id"), "entity_type": etype,
                        "fields": list(out_fields.values())}
-            # Carried only as far as the disambiguation pass below, then stripped: it must
-            # never reach a payload, because it is alignment bookkeeping and not a field.
+            # Alignment bookkeeping, kept alongside the record rather than inside `fields`:
+            # it is what the id was disambiguated by, so it never becomes a schema field and
+            # never reaches the ML-ready columns.
             merged_idents.append(ident)
 
             # A RECORD-LEVEL REVIEW FLAG CARRIES ON ANY VOTE, NOT A MAJORITY — and the
