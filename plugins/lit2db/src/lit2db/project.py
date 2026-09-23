@@ -460,6 +460,100 @@ def calibrate(root: str | pathlib.Path = ".") -> dict:
     }
 
 
+# The PRISMA 2020 flow, in the order the diagram reads. Each stage names what it counts and
+# what the count comes FROM, because a flow diagram whose numbers were typed in by hand is the
+# thing this emitter exists to replace (framework-paradigm.md section 4: PRISMA covers corpus
+# construction completely, we invent nothing, and the only claim we make is that the numbers came
+# out of the record).
+FLOW = (
+    ("identified", "records returned by the ratified query", "search.json: hits"),
+    ("examined", "records retrieved and assessed", "search.json: the papers examined"),
+    ("excluded_not_retrievable", "no legally readable copy, so never assessed",
+     "search.json: unreachable"),
+    ("excluded_retracted", "retracted, refused before reading", "search.json: retracted"),
+    ("assessed_full_text", "assessed as full text", "search.json: full_text"),
+    ("assessed_abstract_only", "assessed as abstract only, the ratified fallback",
+     "search.json: abstract_only"),
+    ("read", "actually read by the pipeline", "one scored.json per paper"),
+    ("contributed_records", "papers that yielded at least one record", "the run manifest"),
+    ("yielded_nothing", "read and reported nothing that qualified, a recorded negative",
+     "the run manifest"),
+)
+
+
+def prisma(root: str | pathlib.Path = ".") -> dict:
+    """The flow counts, emitted from the record rather than counted by hand.
+
+    IT STOPS WHERE PRISMA STOPS. The diagram terminates at "studies included"; everything lit2db
+    does downstream of that box (which values were admitted, which refused, and why) is reported
+    separately and is not folded in here, because folding it in would quietly redefine a standard
+    the field reads in one particular way (D-123).
+
+    Every number carries the artifact it was read from, so a reader can check it rather than
+    trust it, and a stage nothing can answer prints "not counted" rather than 0 (D-078's rule:
+    a counter that found nothing and a list that is clear must never look the same).
+    """
+    p = paths(root)
+    if not p["search"].exists():
+        raise ValueError(f"no corpus at {p['search']}; run fetch first")
+    rec = json.loads(p["search"].read_text(encoding="utf-8"))
+    c = rec.get("counts") or {}
+    manifest = {}
+    if (p["run"] / "manifest.json").exists():
+        manifest = json.loads((p["run"] / "manifest.json").read_text(encoding="utf-8"))
+    per_paper = manifest.get("per_paper") or []
+    done = [r for r in per_paper if r.get("status") == "done"]
+
+    counted = {
+        "identified": c.get("hits"),
+        "examined": c.get("examined"),
+        "excluded_not_retrievable": c.get("unreachable", 0),
+        "excluded_retracted": c.get("retracted", 0),
+        "assessed_full_text": c.get("full_text", 0),
+        "assessed_abstract_only": c.get("abstract_only", 0),
+        "read": len(done) if per_paper else None,
+        "contributed_records": sum(1 for r in done if r.get("n_records")) if per_paper else None,
+        "yielded_nothing": sum(1 for r in done if not r.get("n_records")) if per_paper else None,
+    }
+    reasons = {}
+    for e in rec.get("papers", []):
+        if e.get("outcome") in ("unreachable", "retracted") and e.get("why"):
+            reasons[e["why"]] = reasons.get(e["why"], 0) + 1
+
+    lines = [f"# PRISMA flow, emitted {_now()}", "",
+             f"Query, as ratified and executed: `{rec.get('query', '')}`", "",
+             f"Endpoint: {rec.get('endpoint', '')} · executed {rec.get('executed_at', '')}", "",
+             "| stage | n | what it counts | read from |", "|---|---:|---|---|"]
+    for key, what, source in FLOW:
+        n = counted.get(key)
+        lines.append(f"| {key.replace('_', ' ')} | {'not counted' if n is None else n} | "
+                     f"{what} | {source} |")
+    if reasons:
+        lines += ["", "## Why records were excluded before assessment", "",
+                  "| reason | n |", "|---|---:|"]
+        for why, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {why} | {n} |")
+    lines += ["", "## What this does not cover", "",
+              "PRISMA's flow terminates at the studies included. What each admitted paper then "
+              "yielded, and which values were written, held or refused, is in `candidates.csv`, "
+              "`accepted.csv` and the run's questions, and is deliberately not folded into the "
+              "numbers above.", ""]
+    if not per_paper:
+        lines += ["No run has been scored yet, so the reading stages read `not counted` rather "
+                  "than 0: nothing has been read, which is not the same as nothing being "
+                  "readable.", ""]
+
+    p["results"].mkdir(parents=True, exist_ok=True)
+    (p["results"] / "prisma.md").write_text("\n".join(lines), encoding="utf-8")
+    (p["results"] / "prisma-flow.json").write_text(json.dumps(
+        {"query": rec.get("query"), "endpoint": rec.get("endpoint"),
+         "executed_at": rec.get("executed_at"), "emitted_at": _now(),
+         "counts": counted, "exclusion_reasons": reasons,
+         "sources": {k: src for k, _, src in FLOW}}, indent=1), encoding="utf-8")
+    return {"counts": counted, "exclusion_reasons": reasons,
+            "written": [str(p["results"] / "prisma.md"), str(p["results"] / "prisma-flow.json")]}
+
+
 def _field_columns(payload: dict) -> dict:
     row = {}
     for f in payload.get("fields") or []:

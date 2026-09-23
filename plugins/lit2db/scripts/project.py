@@ -14,6 +14,7 @@ Run it through the launcher so the interpreter is one that can import the plugin
     run     [--dry-run] [--limit N]  run the pipeline (long; resumable at the paper boundary)
     review  [--focus judge-supported] open the review page on this project, beside the papers
     calibrate                        what your own verdicts say about where the bar could sit
+    prisma                           the flow counts, emitted from the record not counted by hand
     export                           lit2db/results/{papers,candidates,accepted}.csv
     where                            print the project layout
 
@@ -100,6 +101,7 @@ def main(argv=None) -> int:
     s.add_argument("--all", action="store_true", help="include records already ruled on")
 
     sub.add_parser("calibrate")
+    sub.add_parser("prisma")
     sub.add_parser("export")
     sub.add_parser("where")
 
@@ -151,6 +153,8 @@ def main(argv=None) -> int:
             for name, block in (out.pop("tables", None) or {}).items():
                 print(f"\n{name.replace('_', ' ')}\n{block}")
             print()
+        elif a.step == "prisma":
+            out = project.prisma(a.root)
         elif a.step == "export":
             out = project.export(a.root)
         else:

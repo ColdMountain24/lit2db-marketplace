@@ -370,6 +370,52 @@ def test_calibrate_says_what_to_do_when_nothing_has_been_reviewed(tmp_path):
     assert out["reviewed"] == 0 and "judge-supported" in out["next"]
 
 
+# --- PRISMA (M13) ---------------------------------------------------------------------------
+
+def test_prisma_counts_come_from_the_record_and_name_where_each_came_from(tmp_path):
+    _fetched(tmp_path)
+    out = project.prisma(tmp_path)
+    assert out["counts"]["identified"] == 57 and out["counts"]["examined"] == 5
+    assert out["counts"]["assessed_full_text"] == 2
+    assert out["counts"]["assessed_abstract_only"] == 1
+    assert out["counts"]["excluded_not_retrievable"] == 1
+    assert out["counts"]["excluded_retracted"] == 1
+    body = (project.paths(tmp_path)["results"] / "prisma.md").read_text()
+    assert "search.json" in body, "a number a reader cannot trace is a number they must trust"
+    assert '"widget" AND OPEN_ACCESS:y' in body, "the ratified query is the corpus boundary"
+
+
+def test_reading_stages_read_not_counted_before_a_run_rather_than_zero(tmp_path):
+    """D-078's rule: a counter that found nothing and a list that is clear must never look the
+    same. Nothing has been read yet, which is not the same as nothing being readable."""
+    _fetched(tmp_path)
+    out = project.prisma(tmp_path)
+    assert out["counts"]["read"] is None and out["counts"]["contributed_records"] is None
+    assert "not counted" in (project.paths(tmp_path)["results"] / "prisma.md").read_text()
+
+
+def test_prisma_counts_what_was_read_once_a_run_exists(tmp_path):
+    _fetched(tmp_path)
+    run = project.paths(tmp_path)["run"]
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "manifest.json").write_text(json.dumps({"per_paper": [
+        {"paper": "PMC111", "status": "done", "n_records": 3},
+        {"paper": "PMID_2", "status": "done", "n_records": 0},
+        {"paper": "PMC555", "status": "error", "n_records": 0}]}))
+    counts = project.prisma(tmp_path)["counts"]
+    assert counts["read"] == 2 and counts["contributed_records"] == 1
+    assert counts["yielded_nothing"] == 1, "a paper reporting nothing qualifying is a result"
+
+
+def test_prisma_stops_where_prisma_stops(tmp_path):
+    """The diagram terminates at the studies included. Folding what the gate then did into these
+    numbers would quietly redefine a standard the field reads one particular way (D-123)."""
+    _fetched(tmp_path)
+    project.prisma(tmp_path)
+    body = (project.paths(tmp_path)["results"] / "prisma.md").read_text()
+    assert "does not cover" in body and "candidates.csv" in body
+
+
 def test_export_writes_all_three_tiers_with_quotes(tmp_path):
     _fetched(tmp_path)
     db = str(project.paths(tmp_path)["db"])
