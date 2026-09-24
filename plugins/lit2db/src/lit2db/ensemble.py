@@ -32,6 +32,8 @@ import hashlib
 import re
 import statistics
 import unicodedata
+
+from .store import find_spans
 from typing import Optional
 
 # Default relative tolerance for numeric agreement. Matches the grounding check in the MCP
@@ -406,6 +408,106 @@ def _fields_of(rec: dict) -> dict:
     return {f.get("field_name"): f for f in (rec.get("fields") or []) if isinstance(f, dict)}
 
 
+# --- Anchored identity: aligning on WHERE a record was read, not on what it says ------------
+#
+# WHY THIS EXISTS (M13). A measured value has a name; a CLAIM is a sentence, and a sentence is
+# the worst possible identity. Two independent readings of the same finding quote overlapping but
+# different spans of it, so a text identity does not match, and the pair falls to the ordinal
+# tier: positional, document-wide, the tier the ensemble explicitly cannot vouch for, and already
+# 40% of records on the first BBB wave. For a review pack that would be the backbone.
+#
+# The store is the coordinate system, so the stable thing about two readings of one finding is
+# that they point at the SAME PLACE. `anchor_passes` resolves each record's first quote to an
+# offset in `full.txt` and stamps the sentence it lands in; an identity level of `@sentence`
+# then aligns on that. Two readings quoting different lengths of one sentence agree; two
+# genuinely different claims inside one sentence do not collide, because `ordinal_within`
+# `@sentence` separates them within that sentence instead of across the whole document.
+ANCHOR = "_anchor"
+ANCHOR_LEVELS = ("@sentence", "@span")
+# Deliberately crude, and stdlib. This is not sentence segmentation for its own sake: the only
+# property required is that the SAME text splits the same way every time, so both readings land
+# in the same bucket. An abbreviation that splits a sentence in two splits it identically for
+# every pass, which costs alignment nothing.
+_SENT_END = re.compile(r"(?<=[.!?])[\s\u00a0]+")
+
+
+def sentence_bounds(text: str) -> list:
+    """(start, end) per sentence, covering the whole text with no gaps."""
+    out, at = [], 0
+    for m in _SENT_END.finditer(text):
+        out.append((at, m.start()))
+        at = m.end()
+    out.append((at, len(text)))
+    return [(a, b) for a, b in out if b > a]
+
+
+def _first_quote(rec: dict):
+    for f in (rec.get("fields") or []):
+        q = f.get("verbatim_quote") if isinstance(f, dict) else None
+        if isinstance(q, (list, tuple)):
+            q = next((x for x in q if isinstance(x, str) and x.strip()), None)
+        if isinstance(q, str) and q.strip():
+            return q
+    return None
+
+
+def anchor_passes(passes: list, full_text: str) -> list:
+    """Stamp every record with WHERE its evidence sits, before any of them are merged.
+
+    Runs before `merge_passes` because identity is decided there, while offsets were previously
+    resolved after it (`pipeline.assemble`). A record whose quote cannot be found is left
+    unstamped rather than given a guessed position: an identity nobody can check is worse than
+    no identity, and the chain falls through to whatever the spec ratified next.
+    """
+    bounds = sentence_bounds(full_text or "")
+    out = []
+    for records in passes:
+        stamped = []
+        for rec in (records or []):
+            rec = dict(rec or {})
+            quote = _first_quote(rec)
+            hits = find_spans(full_text, quote) if (quote and full_text) else []
+            if hits:
+                start = hits[0]["start"]
+                idx = next((i for i, (a, b) in enumerate(bounds) if a <= start < b), None)
+                rec[ANCHOR] = {"start": start, "end": hits[0]["end"],
+                               "sentence": idx, "unique": len(hits) == 1}
+            stamped.append(rec)
+        out.append(stamped)
+    return out
+
+
+def uses_anchors(identity_fields: Optional[dict]) -> bool:
+    """Does any ratified identity in this config align on WHERE a record was read?"""
+    # Defensive about SHAPE, because this decides whether a run reads a file. `identity_fields`
+    # is documented as entity_type -> spec, and a config carrying anything else (a bare list, a
+    # string) must answer "no anchors" rather than raise halfway through a paper.
+    if isinstance(identity_fields, dict):
+        specs = list(identity_fields.values())
+    elif isinstance(identity_fields, (list, tuple)):
+        specs = list(identity_fields)
+    else:
+        return False
+    for spec in specs:
+        s = _id_spec(spec)
+        levels = []
+        for lv in s["chain"] + [s["ordinal_within"]]:
+            levels.extend([lv] if isinstance(lv, str) else list(lv or []))
+        if any(lv in ANCHOR_LEVELS for lv in levels):
+            return True
+    return False
+
+
+def _anchor_value(rec: dict, level: str) -> Optional[str]:
+    a = rec.get(ANCHOR) or {}
+    if level == "@sentence":
+        i = a.get("sentence")
+        return None if i is None else f"s{i}"
+    if level == "@span":
+        return None if a.get("start") is None else f"{a['start']}:{a['end']}"
+    return None
+
+
 def _id_spec(spec) -> dict:
     """Normalize a ratified identity declaration into {chain, ordinal_within}.
 
@@ -435,8 +537,11 @@ def _level_value(rec: dict, level, steps) -> Optional[str]:
     parts = [level] if isinstance(level, str) else list(level)
     out = []
     for name in parts:
-        f = fields.get(name)
-        v = normalize(f.get("value"), steps) if f else None
+        if name in ANCHOR_LEVELS:
+            v = _anchor_value(rec, name)
+        else:
+            f = fields.get(name)
+            v = normalize(f.get("value"), steps) if f else None
         if not v:
             return None
         out.append(v)
@@ -465,7 +570,17 @@ def _identity(rec: dict, spec, steps, ordinal: Optional[int] = None) -> Optional
     if ordinal is not None and s["ordinal_within"]:
         scope = _level_value(rec, s["ordinal_within"], steps)
         if scope:
-            return (f"{scope}#ord{ordinal}", "ordinal")
+            # ANCHORED IS NOT THE SAME EVIDENCE AS ORDINAL, and calling both "ordinal" would
+            # bury the difference. A document-wide ordinal says "the nth unnamed record in this
+            # paper", which independent passes can easily number differently. An ordinal scoped
+            # to a SENTENCE says "the nth claim in this one sentence", where both readings were
+            # looking at the same 20 words. It is still positional and still the weakest rule
+            # here, so it is labelled rather than promoted — but a review pack whose every
+            # record is anchored must not raise a weak-identity question for every record.
+            anchored = all(lv in ANCHOR_LEVELS for lv in
+                           ([s["ordinal_within"]] if isinstance(s["ordinal_within"], str)
+                            else s["ordinal_within"]))
+            return (f"{scope}#ord{ordinal}", "anchored" if anchored else "ordinal")
         # THE LAST RESORT MAY NOT HAVE A PREREQUISITE (D-069). Scoping the ordinal inside a
         # field means the fallback fails whenever THAT field is missing — so a record with no
         # accession, no name-pair and no organism had no identity at all, and merge_passes
@@ -655,7 +770,14 @@ def merge_passes(passes: list, identity_fields: Optional[dict] = None,
                            # 'ordinal' means they were paired by order of appearance, which is
                            # not guaranteed stable across independent passes, so a disagreement
                            # under it may be a mis-pairing rather than a real disagreement.
-                           "identity_tier": id_tiers.get((e, i), "singleton")}
+                           "identity_tier": id_tiers.get((e, i), "singleton"),
+                           # Whether the quote each contributing record was anchored by occurs
+                           # exactly once in the source. Anchoring on a sentence that appears
+                           # twice is not "the same place", and downstream turns that into a
+                           # question instead of trusting the alignment.
+                           "anchor_unique": all((idx[(e, i)].get(ANCHOR) or {}).get("unique",
+                                                                                    True)
+                                                for idx in indexed if (e, i) in idx)}
                           for (e, i) in keys],
             "identity_tiers": {t: sum(1 for (e, i) in keys
                                       if id_tiers.get((e, i), "singleton") == t)

@@ -61,7 +61,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 from lit2db.accounting import STREAMS, RunAccount             # noqa: E402
-from lit2db.ensemble import merge_passes                      # noqa: E402
+from lit2db.ensemble import anchor_passes, merge_passes, uses_anchors                      # noqa: E402
 from lit2db.fuse import Fuse, FuseExceeded                    # noqa: E402
 from lit2db.gate import single_pass_problems                   # noqa: E402
 from lit2db.output import record_candidate, upsert
@@ -422,6 +422,11 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                                "detail": "all readings found no records; the screen admitted "
                                          "this paper but it may not report the entity"}]}
 
+    # ANCHOR BEFORE MERGING, not after. Identity is decided inside `merge_passes`, while
+    # offsets were historically resolved in `assemble`, one stage too late for a claim to be
+    # aligned by the place it was read from (M13).
+    if uses_anchors(cfg["identity_fields"]):
+        passes = anchor_passes(passes, store.read_text(encoding="utf-8"))
     merged = merge_passes(passes, identity_fields=cfg["identity_fields"])
     merged["_passes"] = passes
     (pdir / "merged.json").write_text(json.dumps(

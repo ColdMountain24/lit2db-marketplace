@@ -36,7 +36,7 @@ import traceback
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
-from lit2db.ensemble import merge_passes                       # noqa: E402
+from lit2db.ensemble import anchor_passes, merge_passes, uses_anchors                       # noqa: E402
 
 # The REAL pipeline, imported from the library rather than reimplemented or borrowed off a
 # script. Replaying through the real path means a change to it is covered here too — a parallel
@@ -106,6 +106,9 @@ def replay_one(pdir: pathlib.Path, cfg: dict, db: str | None = None) -> dict:
         row["status"] = "empty"
         return row
     try:
+        if uses_anchors(cfg["identity_fields"]):
+            full = pathlib.Path(cfg["stores"]) / name / "full.txt"
+            passes = anchor_passes(passes, full.read_text(encoding="utf-8"))
         merged = merge_passes(passes, identity_fields=cfg["identity_fields"])
     except Exception as exc:                                   # noqa: BLE001
         row.update(status="MERGE FAILED", error=f"{type(exc).__name__}: {exc}")

@@ -439,6 +439,15 @@ def catalogue_questions(paper: str, merged: dict, failures: list, dropped: list,
             qs.append({"paper": paper, "kind": "weak_identity",
                        "detail": f"{a['identity']} was matched only by order of appearance",
                        "identity_tier": a["identity_tier"]})
+        elif a["identity_tier"] == "anchored" and not a.get("anchor_unique", True):
+            # Anchored alignment is positional INSIDE one sentence, which is a far narrower
+            # claim than a document-wide ordinal and does not deserve a question per record.
+            # It earns one only when the quote it was anchored by occurs more than once in the
+            # paper, because then "the same place" was not one place.
+            qs.append({"paper": paper, "kind": "ambiguous_anchor",
+                       "detail": f"{a['identity']} was anchored on a quote that appears more "
+                                 f"than once in the source",
+                       "identity_tier": a["identity_tier"]})
     for name, rep in (merged.get("ensemble") or {}).items():
         if not rep.get("ambiguous_modal"):
             continue
