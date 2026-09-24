@@ -649,5 +649,18 @@ def export(root: str | pathlib.Path = ".") -> dict:
                          "confidence": r["composite_confidence"], **_field_columns(payload)})
     out["accepted"] = _write_csv(p["results"] / "accepted.csv", acc_rows,
                                  ["source", "record", "confidence"])
+
+    # A review project also gets its themed reading order, from the same claims. Written here
+    # rather than only on demand so the three tiers and the grouping can never describe
+    # different states of the database.
+    from . import themes
+    if p["spec"].exists():
+        try:
+            body = themes.markdown(str(p["db"]), str(p["spec"]))
+        except (ValueError, KeyError):
+            body = None                      # no ratified theme set: not a review project
+        if body:
+            (p["results"] / "themes.md").write_text(body, encoding="utf-8")
+            out["themes"] = str(p["results"] / "themes.md")
     out["folder"] = str(p["results"])
     return out

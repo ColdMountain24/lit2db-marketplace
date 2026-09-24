@@ -14,6 +14,12 @@ Run it through the launcher so the interpreter is one that can import the plugin
     run     [--dry-run] [--limit N]  run the pipeline (long; resumable at the paper boundary)
     review  [--focus judge-supported] open the review page on this project, beside the papers
     calibrate                        what your own verdicts say about where the bar could sit
+    review-spec --question Q --query Q2 [--include k=v ...] [--ratify]
+                                     a review's starting spec: claims, direction, design,
+                                     population, plus their question. PROPOSED until they rule.
+    themes  --propose | --freeze | --table
+                                     the coding frame: proposed from the sample, ratified by you,
+                                     frozen into the spec as a field the normal gate then checks
     prisma                           the flow counts, emitted from the record not counted by hand
     export                           lit2db/results/{papers,candidates,accepted}.csv
     where                            print the project layout
@@ -34,7 +40,7 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
-from lit2db import project                                     # noqa: E402
+from lit2db import project, themes                             # noqa: E402
 
 
 def _version() -> str:
@@ -100,6 +106,29 @@ def main(argv=None) -> int:
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--all", action="store_true", help="include records already ruled on")
 
+    s = sub.add_parser("review-spec")
+    s.add_argument("--question", required=True, help="the review's question, in their words")
+    s.add_argument("--query", required=True, help="the Europe PMC query for the corpus")
+    s.add_argument("--include", nargs="*", default=[], metavar="NAME=RULE",
+                   help="inclusion and exclusion rules, e.g. design='RCTs only'")
+    s.add_argument("--ratify", action="store_true",
+                   help="the researcher has ruled on every item above. Without this the spec is "
+                        "written PROPOSED and no wave can run on it, which is the point.")
+
+    s = sub.add_parser("themes")
+    s.add_argument("--propose", action="store_true",
+                   help="read the sample wave's claims and propose a theme set to rule on")
+    s.add_argument("--freeze", action="store_true",
+                   help="write the RATIFIED set into the spec as an enum field, versioned")
+    s.add_argument("--from-file", default="",
+                   help="the ruled set to freeze (default: lit2db/themes.json)")
+    s.add_argument("--question", default="",
+                   help="the review question, for --propose (default: the spec's own)")
+    s.add_argument("--model", default="opus")
+    s.add_argument("--n", type=int, default=12, help="at most this many themes")
+    s.add_argument("--table", action="store_true",
+                   help="write lit2db/results/themes.md from the claims as they stand")
+
     sub.add_parser("calibrate")
     sub.add_parser("prisma")
     sub.add_parser("export")
@@ -153,6 +182,68 @@ def main(argv=None) -> int:
             for name, block in (out.pop("tables", None) or {}).items():
                 print(f"\n{name.replace('_', ' ')}\n{block}")
             print()
+        elif a.step == "review-spec":
+            pa = project.paths(a.root)
+            project.init(a.root)
+            inclusion = dict(kv.split("=", 1) for kv in a.include if "=" in kv)
+            spec = themes.claim_spec(a.question, query=a.query, inclusion=inclusion,
+                                     ratified=a.ratify)
+            if pa["spec"].exists() and not a.ratify:
+                raise ValueError(f"{pa['spec']} already exists; ratifying a new one would "
+                                 f"replace a spec a wave may already have run on")
+            pa["spec"].write_text(json.dumps(spec, indent=1), encoding="utf-8")
+            out = {"spec": str(pa["spec"]), "spec_version": spec["spec_version"],
+                   "ratified": a.ratify,
+                   "items": [{"id": i["item_id"], "summary": i["summary"], "status": i["status"]}
+                             for i in spec["ledger"]["items"]]}
+            if not a.ratify:
+                out["next"] = ("Nothing can run on this yet. Put every item above to the "
+                               "researcher in their own words, one at a time, then re-run with "
+                               "--ratify. A spec whose fields trace to PROPOSED items is refused "
+                               "by the contract, not by convention.")
+        elif a.step == "themes":
+            pa = project.paths(a.root)
+            if a.table:
+                body = themes.markdown(str(pa["db"]), str(pa["spec"]))
+                pa["results"].mkdir(parents=True, exist_ok=True)
+                (pa["results"] / "themes.md").write_text(body, encoding="utf-8")
+                out = {"written": str(pa["results"] / "themes.md"),
+                       "themes": list(themes.ratified_set(str(pa["spec"])))}
+            elif a.propose:
+                spec = json.loads(pa["spec"].read_text(encoding="utf-8"))
+                question = a.question or spec.get("research_question") or ""
+                # The model call goes through the same headless driver the wave uses, so a
+                # proposal is billed and fused exactly like every other call (run_wave.child_env:
+                # the subscription unless the config says otherwise).
+                sys.path.insert(0, str(HERE))
+                import run_wave
+                run_wave._CHILD_ENV = run_wave.child_env({}, os.environ)
+                fuse = run_wave.Fuse(label="themes")
+
+                def ask(prompt: str) -> str:
+                    r = run_wave.call_agent(prompt, a.model, label="themes", cwd=pa["base"],
+                                            fuse=fuse, stage="themes", retries=2)
+                    if not r["ok"]:
+                        raise RuntimeError(f"the theme proposal call failed: {r['text'][:200]}")
+                    return r["text"]
+
+                out = themes.propose(str(pa["db"]), question, ask, n_themes=a.n)
+                dest = pa["base"] / "themes.proposed.json"
+                dest.write_text(json.dumps(out, indent=1), encoding="utf-8")
+                out = {**out, "written": str(dest),
+                       "next": f"Rule on each theme, save the ones you accept (with any edits to "
+                               f"their definitions) as {pa['base'] / 'themes.json'}, then run "
+                               f"`themes --freeze`."}
+            elif a.freeze:
+                src = pathlib.Path(a.from_file) if a.from_file else pa["base"] / "themes.json"
+                if not src.exists():
+                    raise ValueError(f"no ratified set at {src}; --propose first, then save the "
+                                     f"themes you accepted there")
+                ruled = json.loads(src.read_text(encoding="utf-8"))
+                out = themes.freeze(str(pa["spec"]),
+                                    ruled["themes"] if isinstance(ruled, dict) else ruled)
+            else:
+                raise ValueError("say which: --propose, --freeze or --table")
         elif a.step == "prisma":
             out = project.prisma(a.root)
         elif a.step == "export":
