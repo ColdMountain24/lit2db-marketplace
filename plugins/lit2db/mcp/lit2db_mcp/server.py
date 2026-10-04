@@ -303,7 +303,8 @@ def gate_upsert(record: dict, composite_confidence: float,
                 db_path: str = "", autoaccept: float = -1.0,
                 require_contradiction_search: bool = False,
                 review_lane: list | None = None,
-                min_populated_fields: int = -1) -> dict:
+                min_populated_fields: int = -1,
+                uncertainty_groups: dict | None = None) -> dict:
     """The HARD write-gate (Stage 7). Writes to the DB IFF ALL hold:
       (1) composite_confidence >= auto-accept threshold,
       (2) no field routes to quarantine or human_review,
@@ -318,7 +319,11 @@ def gate_upsert(record: dict, composite_confidence: float,
           and falls back to LIT2DB_MIN_POPULATED_FIELDS, then to 0 = no condition. A sparse
           record is measurably more often wrong — measured across two arms against a
           collaborator's own database, one of them a pre-registered held-out slice — so a
-          project that has calibrated the number holds thin records in the candidate pool.
+          project that has calibrated the number holds thin records in the candidate pool,
+      (8) every uncertainty group in `uncertainty_groups` (D-203) is whole and readable on a
+          record carrying its measured value: spread type and both sample sizes present, each a
+          value or exactly 'not reported', and the spread values the type needs. Empty = off.
+          The PreToolUse hook reads the same argument, so the two points apply one rule.
     Set require_contradiction_search=True to also block values whose source was never
     searched for counter-evidence: "we did not look" is not "we looked and it was clean".
     'deny' wins. A denied record is NOT written; its reasons are returned for routing to the
@@ -331,7 +336,8 @@ def gate_upsert(record: dict, composite_confidence: float,
     return _upsert(record, composite_confidence, db_path or DB_PATH,
                    autoaccept if autoaccept >= 0 else AUTOACCEPT,
                    require_contradiction_search, review_lane,
-                   min_populated_fields if min_populated_fields >= 0 else MIN_POPULATED)
+                   min_populated_fields if min_populated_fields >= 0 else MIN_POPULATED,
+                   uncertainty_groups)
 
 
 # ------------------------------------------------------------------------------------

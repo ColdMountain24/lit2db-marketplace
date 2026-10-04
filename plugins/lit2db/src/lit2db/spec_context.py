@@ -71,6 +71,34 @@ def _field_line(f) -> list[str]:
     return out
 
 
+def _uncertainty_lines(groups: dict) -> list[str]:
+    """The rule a ratified uncertainty group carries (D-203), rendered from its field names.
+
+    Structure only: which companion a spread type needs, and what 'not reported' means. It is
+    printed because the general extraction rule is to OMIT what cannot be quoted, and for these
+    fields omission and 'not reported' are different facts the gate tells apart.
+    """
+    L = ["# Uncertainty beside a measured value, as ratified"]
+    for m, r in groups.items():
+        L.append(f"For every record that gives {m}, also give, every time: {r['spread_type']}, "
+                 f"{r['n_group']} and {r['n_total']}. Then, by spread type:")
+        L.append(f"- standard deviation or standard error: {r['spread']}, the one number, in "
+                 f"the unit of {m}.")
+        L.append(f"- confidence interval: {r['spread_lower']}, {r['spread_upper']}, and "
+                 f"{r['spread_level']} as a percentage (95 for a 95% interval).")
+        L.append(f"- interquartile range or full range: {r['spread_lower']} and "
+                 f"{r['spread_upper']}.")
+        L.append(f"- not reported: none of the others, unless the source prints a spread without "
+                 f"naming it (a bare plus-or-minus, or a bracketed pair): then give that number "
+                 f"in {r['spread']}, or the pair in {r['spread_lower']} and {r['spread_upper']}.")
+    L.append("**'not reported' is an answer, and the only one for something the source does not "
+             "give.** Write exactly `not reported`, and quote the sentence that gives the "
+             "measured value as its evidence. Never write 0, a blank, 'NR' or 'n/a' in its "
+             "place. For these fields alone, do not omit what you cannot find: leaving one out "
+             "says you did not look, which is a different fact from the source not giving it.")
+    return L
+
+
 def spec_context(spec: SpecLike, *, only_fields: list[str] | None = None) -> str:
     """The ratified spec, rendered for a model. Formats only; adds nothing.
 
@@ -109,6 +137,11 @@ def spec_context(spec: SpecLike, *, only_fields: list[str] | None = None) -> str
     L.append("# The fields, as ratified")
     for f in fields:
         L.extend(_field_line(f))
+
+    groups = s.uncertainty_groups()
+    if groups and only_fields is None:
+        L.append("")
+        L.extend(_uncertainty_lines(groups))
 
     L.append("")
     L.append("# Naming conventions ratified for this project")

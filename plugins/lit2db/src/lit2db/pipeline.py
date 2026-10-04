@@ -35,6 +35,7 @@ from .grounding import ground_literature
 from .llm_grounding import resolve
 from .gate import selection_reasons
 from .store import find_spans, section_of
+from .uncertainty import companion_names, is_not_reported
 
 
 # A judge verdict is an ordinal STATE, never a probability (D-079). It used to be mapped onto
@@ -164,6 +165,12 @@ def assemble(paper: str, cfg: dict, merged: dict, hunt: dict, grounder=None) -> 
                         return f.get("verbatim_quote")
         return None
 
+    # D-203: an uncertainty companion saying 'not reported' asserts an ABSENCE, and no substring
+    # test can find an absence in a quote. Same class as D-061's enums: the quote is anchored
+    # (reaching the grounding step means it is in full.txt), and whether the paper really gives
+    # no spread or n is the adversarial judge's call, made against the whole source. Only for
+    # declared companions; 'not reported' in any other field still grounds lexically and fails.
+    companions = companion_names(cfg.get("uncertainty_groups") or {})
     out, dropped = [], []
     for rec in merged["records"]:
         acc = next((f.get("value") for f in rec["fields"]
@@ -203,7 +210,11 @@ def assemble(paper: str, cfg: dict, merged: dict, hunt: dict, grounder=None) -> 
             # signals actually measured, which is what "leave c_ensemble unset" meant.
             if len(merged.get("_passes") or []) < 2:
                 cc.pop("c_ensemble", None)
-            if grounder is not None and name not in cfg.get("evidence_grounded_fields", []):
+            absent_claim = name in companions and is_not_reported(value)
+            if absent_claim:
+                cc["c_grounded"] = 1.0
+                cc["_grounding_mode"] = "not_reported_anchored"
+            elif grounder is not None and name not in cfg.get("evidence_grounded_fields", []):
                 # THE INVERSION (D-110/D-112). The model decides support; everything else stays
                 # deterministic. Reaching this line already means the quote anchored in full.txt
                 # at a resolved offset — that fact is not up for judgement and is not asked about.
@@ -284,6 +295,26 @@ def assemble(paper: str, cfg: dict, merged: dict, hunt: dict, grounder=None) -> 
             out.append(r_out)
     return out, dropped
 
+
+
+def claim_text(rec: dict) -> str:
+    """The claim the adversarial judge is asked to verify, from a record's fields.
+
+    `field = value; ...`, unchanged for every ordinary value. A 'not reported' value is written as
+    what it claims, that the source does not report it (D-203), because the judge's rule is that a
+    part of the claim the source is silent on is UNSUPPORTED, and `field = not reported` reads as
+    a value to find rather than an absence to confirm.
+    """
+    parts = []
+    for f in rec.get("fields") or []:
+        v = f.get("value")
+        if v is None:
+            continue
+        if is_not_reported(v):
+            parts.append(f"{f['field_name']}: the source does not report this")
+        else:
+            parts.append(f"{f['field_name']} = {v}")
+    return "; ".join(parts)
 
 
 # --- who is worth an adversarial read (D-079 / D-081) -----------------------------------

@@ -15,6 +15,8 @@ from enum import Enum
 from typing import Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
+from ..uncertainty import ROLES as UNCERTAINTY_ROLES, SPREAD_TYPES
+
 
 class MLTask(str, Enum):
     classification = "classification"
@@ -100,6 +102,22 @@ class FieldSpec(BaseModel):
     #
     # An optional field that IS present still has to clear the bar like any other.
     required: bool = False
+    # Marks this field as one of the seven uncertainty companions of a numeric field (D-203):
+    # `uncertainty_of` names the measured field, `uncertainty_role` says which companion this is
+    # (see `lit2db.uncertainty.ROLES`). Both or neither. The group's requirement is CONDITIONAL on
+    # the measured value being present, so it is enforced per group by the gate, not by
+    # `required` above, which is unconditional.
+    uncertainty_of: Optional[str] = None
+    uncertainty_role: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _uncertainty_pair(self):
+        if (self.uncertainty_of is None) != (self.uncertainty_role is None):
+            raise ValueError(f"{self.name}: uncertainty_of and uncertainty_role travel together")
+        if self.uncertainty_role is not None and self.uncertainty_role not in UNCERTAINTY_ROLES:
+            raise ValueError(f"{self.name}: uncertainty_role {self.uncertainty_role!r} is not one "
+                             f"of {UNCERTAINTY_ROLES}")
+        return self
 
     def shape_issues(self, value) -> list:
         """Does an extracted value LOOK like the type this field was ratified as?
@@ -308,6 +326,60 @@ class SchemaReadySpec(BaseModel):
                     f"'{q.ledger_item_id}' which is not ACCEPTED/ACCEPTED_WITH_EDIT. "
                     f"Which papers are in scope is researcher substance and ratifies like "
                     f"any other substantive choice.")
+        return self
+
+    def uncertainty_groups(self) -> dict:
+        """`{measured_field: {role: companion_field_name}}`, the dict-shaped declaration the gate
+        reads (D-203). Empty when the spec declares none, which leaves the gate unchanged."""
+        out: dict = {}
+        for f in self.fields:
+            if f.uncertainty_of is not None:
+                out.setdefault(f.uncertainty_of, {})[f.uncertainty_role] = f.name
+        return {m: dict(sorted(r.items())) for m, r in sorted(out.items())}
+
+    @model_validator(mode="after")
+    def _uncertainty_groups_are_whole(self):
+        """A declared uncertainty group is all seven companions of one numeric field, or refused.
+
+        A partial group is worse than none: the gate would read the missing companion as a reading
+        that never answered and hold every row, or a reader would take a group with no n for one
+        that converts. So the structure is checked once, here, rather than at every write.
+        """
+        by_name = {f.name: f for f in self.fields}
+        seen: dict = {}
+        for f in self.fields:
+            if f.uncertainty_of is None:
+                continue
+            m = by_name.get(f.uncertainty_of)
+            if m is None:
+                raise ValueError(f"'{f.name}' qualifies '{f.uncertainty_of}', which is not a "
+                                 f"field of this spec")
+            if m.uncertainty_of is not None or m.type not in ("float", "int"):
+                raise ValueError(f"'{f.name}' qualifies '{m.name}', which is not a plain numeric "
+                                 f"field (type {m.type!r})")
+            roles = seen.setdefault(m.name, {})
+            if f.uncertainty_role in roles:
+                raise ValueError(f"'{m.name}' has two '{f.uncertainty_role}' companions: "
+                                 f"'{roles[f.uncertainty_role]}' and '{f.name}'")
+            roles[f.uncertainty_role] = f.name
+            if not f.auto_acceptable:
+                # A review-lane field is stripped from the written row, so the row would land
+                # without the uncertainty its own spec says it must carry.
+                raise ValueError(f"'{f.name}' is an uncertainty companion and must be "
+                                 f"auto_acceptable; a held companion leaves the row without it")
+            want = {"spread_type": ("enum",), "n_group": ("int",), "n_total": ("int",)}.get(
+                f.uncertainty_role, ("float",))
+            if f.type not in want:
+                raise ValueError(f"'{f.name}' ({f.uncertainty_role}) must be typed {want[0]!r}, "
+                                 f"not {f.type!r}")
+            if f.uncertainty_role == "spread_type" and sorted(f.enum or []) != sorted(SPREAD_TYPES):
+                raise ValueError(f"'{f.name}' must carry exactly the spread types "
+                                 f"{list(SPREAD_TYPES)}, got {f.enum}")
+        for m, roles in seen.items():
+            missing = [r for r in UNCERTAINTY_ROLES if r not in roles]
+            if missing:
+                raise ValueError(f"the uncertainty group for '{m}' is missing {missing}; a group "
+                                 f"is all of {list(UNCERTAINTY_ROLES)} or none")
         return self
 
     @model_validator(mode="after")

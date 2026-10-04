@@ -415,6 +415,12 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
         # the 183-paper wave, so an honest run never trips it.
         "fuse": {"max_calls": 30 * n, "max_tokens": 400_000 * n},
     }
+    # D-203: the uncertainty groups the spec ratified, so the gate checks what the extractor is
+    # told to report. Derived from the spec, so it adds nothing; written only when there are any,
+    # so a spec without them plans byte-for-byte as before.
+    groups = spec.uncertainty_groups()
+    if groups:
+        cfg["uncertainty_groups"] = groups
     cfg["_generated_hash"] = _config_hash(cfg)
     p["config"].write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     return {"config": str(p["config"]), "papers": n,

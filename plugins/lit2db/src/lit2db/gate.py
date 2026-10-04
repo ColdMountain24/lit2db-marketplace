@@ -24,6 +24,8 @@ conditions. Domain-INVARIANT: the threshold is an input, never a constant decide
 """
 from __future__ import annotations
 
+from .uncertainty import companion_names, is_not_reported, uncertainty_reasons
+
 # A deliberately CONSERVATIVE PLACEHOLDER, not a recommended value. It is set high on
 # purpose: before a project calibrates against its gold set, the safe failure mode is
 # auto-accepting too little (everything queues for human review) rather than too much
@@ -202,7 +204,7 @@ def resolve_min_populated(tool_input=None, env=None,
     return default
 
 
-def populated_fields(record, review_lane=()) -> list:
+def populated_fields(record, review_lane=(), companions=()) -> list:
     """The field names that actually carry a value, sorted. Presence is not population.
 
     A field emitted as `""`, `[]` or `{}` answers nothing while occupying a slot, so counting it
@@ -212,8 +214,14 @@ def populated_fields(record, review_lane=()) -> list:
     Review-lane fields do not count. They are HELD, not written (`output.upsert` strips them), so
     counting one toward completeness would let a field that is not part of the row satisfy a
     condition about the row.
+
+    An uncertainty companion saying 'not reported' does not count either (D-203). It is an answer,
+    but it carries no value, and three of them arrive on every measured row; counting them would
+    let a row reach a calibrated minimum on statements of absence. `companions` is empty unless a
+    group is declared, so nothing else changes.
     """
     lane = set(review_lane or ())
+    comp = set(companions or ())
     out = []
     for fv in (record or {}).get("fields") or []:
         if not isinstance(fv, dict):
@@ -227,6 +235,8 @@ def populated_fields(record, review_lane=()) -> list:
         if isinstance(v, str) and not v.strip():
             continue
         if isinstance(v, (list, dict, tuple, set)) and not v:
+            continue
+        if name in comp and is_not_reported(v):
             continue
         out.append(name)
     return sorted(out)
@@ -269,7 +279,8 @@ def judge_veto_reasons(record):
 def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
                       require_contradiction_search: bool = False, review_lane=(),
                       required_fields=(),
-                      min_populated_fields: int = DEFAULT_MIN_POPULATED_FIELDS):
+                      min_populated_fields: int = DEFAULT_MIN_POPULATED_FIELDS,
+                      uncertainty_groups=None):
     """Every reason this record fails SELECTION — the whole gate except the judge's veto.
 
     Split out of `gate_reasons` for one caller: the wave driver, which needs to know who
@@ -289,7 +300,9 @@ def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_
       3. every field carries provenance whose source_status is 'active' — a retracted or
          superseded source never lands, however confident the extraction was,
       4. no field carries counter-evidence from its own source,
-      5. the record populates at least `min_populated_fields` of them (0 = off, the default).
+      5. the record populates at least `min_populated_fields` of them (0 = off, the default),
+      6. every declared uncertainty group on a measured value it carries is whole and readable
+         (D-203; `uncertainty_groups` empty = off, the default). See `lit2db.uncertainty`.
 
     Condition 4 is a BLOCK, not a penalty. Every confidence signal scores the span the
     extractor chose to surface; a contradiction says that choice was unrepresentative, and
@@ -340,12 +353,17 @@ def selection_reasons(record, composite_confidence, autoaccept: float = DEFAULT_
     # many" instead of "which". `required_fields` says a named field is indispensable;
     # this says a sparse record has not earned the table regardless of WHICH fields are thin.
     if min_populated_fields:
-        got = populated_fields(record, lane)
+        got = populated_fields(record, lane, companion_names(uncertainty_groups))
         if len(got) < min_populated_fields:
             reasons.append(
                 f"record populates {len(got)} field(s) ({', '.join(got) or 'none'}) < the "
                 f"calibrated minimum {min_populated_fields} — a sparse record is measurably "
                 f"more often wrong; it stays in the candidate pool with its evidence attached")
+
+    # Uncertainty beside a measured value (D-203). Same family as `required_fields`: held out of
+    # the ML-ready table, still in the candidate pool with the reason attached. A record whose
+    # value cannot say what spread and n stood behind it can be listed but never pooled.
+    reasons += uncertainty_reasons(record, uncertainty_groups, lane)
     for i, fv in enumerate(fields):
         if not isinstance(fv, dict):
             reasons.append(f"field #{i} is not an object")
@@ -445,7 +463,8 @@ def diagnose(reasons, record=None) -> dict:
 def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOACCEPT,
                  require_contradiction_search: bool = False, review_lane=(),
                  required_fields=(),
-                 min_populated_fields: int = DEFAULT_MIN_POPULATED_FIELDS):
+                 min_populated_fields: int = DEFAULT_MIN_POPULATED_FIELDS,
+                 uncertainty_groups=None):
     """Every reason this record must NOT be written. An empty list means the write passes.
 
     THE write predicate — the one both enforcement points call (`gate_upsert` and the PreToolUse
@@ -458,5 +477,5 @@ def gate_reasons(record, composite_confidence, autoaccept: float = DEFAULT_AUTOA
     """
     return (selection_reasons(record, composite_confidence, autoaccept,
                               require_contradiction_search, review_lane, required_fields,
-                              min_populated_fields)
+                              min_populated_fields, uncertainty_groups)
             + judge_veto_reasons(record))

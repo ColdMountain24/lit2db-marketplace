@@ -66,6 +66,8 @@ def main() -> None:
         # `review_lane` in the unsafe one, which is exactly why neither was noticed.
         required_fields=tool_input.get("required_fields") or (),
         min_populated_fields=resolve_min_populated(tool_input, os.environ),
+        # D-203: read from the same argument `gate_upsert` receives, so both points agree.
+        uncertainty_groups=tool_input.get("uncertainty_groups") or {},
     )
     if reasons:
         emit("deny", "; ".join(reasons))

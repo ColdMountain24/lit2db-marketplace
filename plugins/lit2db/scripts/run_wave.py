@@ -68,7 +68,7 @@ from lit2db.output import record_candidate, upsert
 from lit2db.structures import resolve_structure, structure_fields            # noqa: E402
 from lit2db.taxonomy import resolve_taxon, taxon_fields                      # noqa: E402
 from lit2db.scoring import score_and_route                    # noqa: E402
-from lit2db.spec_context import spec_context                  # noqa: E402
+from lit2db.spec_context import load_spec, spec_context       # noqa: E402
 from lit2db.llm_grounding import build_prompt, parse_verdict, resolve   # noqa: E402
 from lit2db.contracts import DEFAULT_WEIGHTS, required_agreement  # noqa: E402
 # THE PIPELINE ITSELF NOW LIVES IN THE LIBRARY. It used to live here, and scoring/gating were
@@ -78,7 +78,7 @@ from lit2db.contracts import DEFAULT_WEIGHTS, required_agreement  # noqa: E402
 # about a record.
 from lit2db.pipeline import (                                 # noqa: E402
     DENIAL_PROCESS, VERDICT_TO_STATE, _extract_json, _parse_verdicts,
-    apply_verdicts, assemble, catalogue_questions, select_for_judging)
+    apply_verdicts, assemble, catalogue_questions, claim_text, select_for_judging)
 
 PLUGIN = pathlib.Path(__file__).resolve().parent.parent
 _log_lock = threading.Lock()
@@ -532,9 +532,7 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     jdir.mkdir(exist_ok=True)
     batch_n = max(1, int(cfg.get("judge_batch_size", 1)))
 
-    def _claim(rec):
-        return "; ".join(f"{f['field_name']} = {f.get('value')}" for f in rec["fields"]
-                         if f.get("value") is not None)
+    _claim = claim_text
 
     def judge_batch(batch):
         """One judge call over `batch` records. Returns (call_ran, [(record_id, verdict|None)]).
@@ -656,7 +654,8 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                 record=s["record"], composite_confidence=s["composite"],
                 db_path=cfg["db_path"], autoaccept=cfg["auto_accept_threshold"],
                 require_contradiction_search=True, review_lane=cfg.get("review_lane", []),
-                min_populated_fields=cfg.get("min_populated_fields", 0))
+                min_populated_fields=cfg.get("min_populated_fields", 0),
+                uncertainty_groups=cfg.get("uncertainty_groups") or {})
             # EVERY record enters the candidate pool, whatever the gate said. A record that
             # missed the bar still carries its quote, offset, grounding score, agreement
             # fraction and judge verdict — which is most of the work of confirming it by hand.
@@ -834,6 +833,20 @@ def preflight(cfg: dict, papers: list) -> list[str]:
                 except Exception as e:
                     problems.append(f"`spec` {spec_path} did not validate as a ratified "
                                     f"SchemaReadySpec: {type(e).__name__}: {str(e)[:200]}")
+                else:
+                    # D-203. A spec that ratified an uncertainty group and a config that does not
+                    # apply it is the same declared-but-unbacked shape as the SPEC_CONTEXT check
+                    # above: the extractor is told to report spread and n, and the gate never
+                    # checks that it did. Hand-edited configs are where this happens, because
+                    # `plan` writes the groups and refuses to overwrite an edited run.json.
+                    declared = load_spec(str(spec_path)).uncertainty_groups()
+                    applied = cfg.get("uncertainty_groups") or {}
+                    if declared != applied:
+                        problems.append(
+                            f"the ratified spec declares uncertainty groups {sorted(declared)} "
+                            f"but the config applies {sorted(applied)}. Re-run `plan` (or copy "
+                            f"the spec's groups into `uncertainty_groups`) so the gate checks "
+                            f"what the extractor is told to report.")
 
     # The inversion's configuration (D-110/D-112). `max(2, ...)` in the grounder is a floor, not
     # a validator: a config asking for one reading would silently RUN two, so the wave would do
