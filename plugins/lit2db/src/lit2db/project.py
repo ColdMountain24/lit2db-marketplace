@@ -29,9 +29,10 @@ it. Nothing is written under the plugin, because the plugin folder is replaced o
 
 It never ratifies. `plan` refuses a spec that does not validate as a `SchemaReadySpec`, so an
 unratified field or an unratified corpus query cannot reach a run through here. It never reaches
-around a paywall: full text comes only from Europe PMC's open-access set, an abstract only when
-the caller says the ratified scope admits abstracts, and everything else is listed as
-unreachable rather than dropped. And it records a retracted source as retracted and does not
+around a paywall: full text comes only from Europe PMC's open-access set or from a PDF the
+researcher already holds and adds by hand (`add_pdf`), an abstract only when the caller says the
+ratified scope admits abstracts, and everything else is listed as unreachable rather than
+dropped. And it records a retracted source as retracted and does not
 read it, because the wave driver stamps every source it is handed `active`.
 
 Stdlib only, like `store` and `gate`: this runs before anything else is known to work.
@@ -43,13 +44,16 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+import re
 import ssl
 import time
 import urllib.parse
 import urllib.request
 from typing import Callable, Optional
 
-from .store import build_from_abstract, build_from_jats, store_dirname, write_store
+from .ensemble import ANCHOR_LEVELS
+from .store import (build_from_abstract, build_from_jats, build_from_pdf, store_dirname,
+                    write_store)
 
 EPMC = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 PLUGIN_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -73,6 +77,19 @@ def paths(root: str | pathlib.Path = ".") -> dict:
         "db": base / "database.db",
         "results": base / "results",
     }
+
+
+# D-208. FAT is the original design: k readers, a contradiction hunter, then a judge per batch,
+# each a full-harness agent that opens the store with a tool. LEAN is one read and one check per
+# paper: one reader, and one judge call that also hunts, each stripped of the harness and handed
+# the source pasted in. Measured on the first review wave: fat about 425,000 work tokens per
+# paper; lean estimated at under 100,000, to be measured against the fat run (D-208).
+RUN_MODES = {
+    "fat": {"run_mode": "fat", "harness": "full", "source_inline": False,
+            "judge_hunts": False},
+    "lean": {"run_mode": "lean", "harness": "stripped", "source_inline": True,
+             "judge_hunts": True, "judge_batch_size": "all", "judge_audit_fraction": 1.0},
+}
 
 
 def init(root: str | pathlib.Path = ".") -> dict:
@@ -240,22 +257,164 @@ def fetch(root: str | pathlib.Path = ".", *, limit: int, allow_abstracts: bool,
     counts = {"hits": s["hit_count"], "examined": len(papers)}
     for e in papers:
         counts[e["outcome"]] = counts.get(e["outcome"], 0) + 1
+    # A PDF a researcher added by hand is not a hit of this query, so it is not counted among the
+    # query's outcomes; but rewriting this file without it would drop it from the corpus without
+    # a word. Carried forward as it was, after the query's own hits.
+    local = _local_entries(p)
+    if local:
+        counts[LOCAL_PDF] = len(local)
     record = {"query": query, "endpoint": EPMC, "executed_at": retrieved_at,
               "limit": limit, "allow_abstracts": allow_abstracts, "counts": counts,
-              "papers": papers}
+              "papers": papers + local}
     p["search"].parent.mkdir(parents=True, exist_ok=True)
     p["search"].write_text(json.dumps(record, indent=1), encoding="utf-8")
     return {"counts": counts, "search": str(p["search"])}
 
 
+# --- sources added by hand: PDFs with no JATS anywhere ------------------------------------------
+
+LOCAL_PDF = "local_pdf"
+
+
+def _local_entries(p: dict) -> list:
+    if not p["search"].exists():
+        return []
+    rec = json.loads(p["search"].read_text(encoding="utf-8"))
+    return [e for e in rec.get("papers", []) if e.get("route") == LOCAL_PDF]
+
+
+def _normal_doi(doi: str) -> str:
+    """A DOI with any resolver prefix removed. Lowercased, because DOIs are case-insensitive and
+    one paper must map to one store directory however its DOI was typed."""
+    d = str(doi or "").strip()
+    d = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", d, flags=re.I)
+    return d.lower()
+
+
+def add_pdf(root: str | pathlib.Path = ".", pdf_path: str | pathlib.Path = "", *,
+            source_id: str = "", doi: str = "", title: str = "", how_found: str = "") -> dict:
+    """Store a PDF the researcher holds as a readable source, beside what `fetch` stored.
+
+    The source id is `DOI:<doi>` whenever a DOI is given (so it files where every other reader
+    of that DOI looks, via `store_dirname`), and the given `source_id` otherwise. The store is
+    built by `store.build_from_pdf`; the corpus record gains an entry with route `local_pdf`,
+    the PDF's sha256 and `how_found`, which `fetch` carries forward when it rewrites the record.
+
+    Re-adding the same PDF is a no-op. Adding a DIFFERENT text under an id that already has a
+    store is refused: offsets recorded against the old text would silently point elsewhere.
+    """
+    p = paths(root)
+    init(root)
+    nd = _normal_doi(doi)
+    sid = f"DOI:{nd}" if nd else str(source_id or "").strip()
+    if not sid:
+        raise ValueError("give the PDF a DOI or a source_id; a source with neither cannot be "
+                         "cited back to anything")
+    src = pathlib.Path(pdf_path).expanduser()
+    if not src.is_file():
+        raise ValueError(f"no PDF at {src}")
+    data = src.read_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+
+    d = p["sources"] / store_dirname(sid)
+    if (d / "full.txt").exists():
+        try:
+            old = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            old = {}
+        if old.get("pdf_sha256") != sha:
+            raise ValueError(
+                f"{sid} already has a stored text at {d} "
+                f"({old.get('acquisition_route') or old.get('source_text_scope') or 'unknown'}"
+                f"{', from a different PDF' if old.get('pdf_sha256') else ''}). Replacing it would "
+                f"move every offset recorded against it. Remove that folder first if replacing "
+                f"it is what you mean.")
+        store_meta, outcome = old, "already stored"
+    else:
+        store = build_from_pdf(data, sid, meta={
+            "doi": nd or None, "title": title or None, "acquisition_route": LOCAL_PDF,
+            "how_found": how_found, "source_file": src.name, "retrieved_at": _now()})
+        write_store(store, p["sources"])
+        store_meta, outcome = store["meta"], "stored"
+
+    why = "added by hand from a local PDF" + (f"; found via {how_found}" if how_found else "")
+    entry = {"pmid": None, "pmcid": None, "doi": nd or None, "title": title or None,
+             "year": None, "journal": None, "license": None, "open_access": None,
+             "in_epmc": False, "pub_types": [], "source_id": sid, "outcome": "full_text",
+             "why": why, "route": LOCAL_PDF, "pdf_sha256": sha, "how_found": how_found,
+             "pdf_file": str(src.resolve()), "added_at": _now()}
+    if p["search"].exists():
+        rec = json.loads(p["search"].read_text(encoding="utf-8"))
+    else:
+        rec = {"query": None, "endpoint": None, "executed_at": None, "counts": {},
+               "papers": []}
+    rec["papers"] = [e for e in rec.get("papers", [])
+                     if not (e.get("route") == LOCAL_PDF and e.get("source_id") == sid)]
+    rec["papers"].append(entry)
+    rec.setdefault("counts", {})[LOCAL_PDF] = sum(1 for e in rec["papers"]
+                                                  if e.get("route") == LOCAL_PDF)
+    p["search"].parent.mkdir(parents=True, exist_ok=True)
+    p["search"].write_text(json.dumps(rec, indent=1), encoding="utf-8")
+
+    out = {"source_id": sid, "dir": str(d), "outcome": outcome, "pdf_sha256": sha,
+           "chars": store_meta.get("chars", len((d / "full.txt").read_text(encoding="utf-8"))),
+           "pages": store_meta.get("page_count"),
+           "references_cut": (store_meta.get("references_cut") or {}).get("cut"),
+           "pages_flagged": sorted(
+               {f["page"] for key in ("interleaved_pages", "column_order_suspect_pages",
+                                      "overprinted_pages")
+                for f in store_meta.get(key) or [] if not f.get("recovered")})}
+    if nd and nd in {_normal_doi(e.get("doi")) for e in rec["papers"]
+                     if e.get("outcome") == "full_text" and e.get("route") != LOCAL_PDF}:
+        out["note"] = ("this DOI is already stored as JATS full text from Europe PMC, which is "
+                       "read in preference (JATS first); this PDF store will not be read")
+    return out
+
+
+def add_pdfs(root: str | pathlib.Path, manifest: str | pathlib.Path) -> dict:
+    """`add_pdf` for every entry of a manifest: a JSON list of
+    `{pdf, source_id, doi, title, how_found}`, `pdf` relative to the manifest's folder.
+    One bad entry does not stop the rest; each failure is reported with its reason."""
+    mpath = pathlib.Path(manifest).expanduser()
+    items = json.loads(mpath.read_text(encoding="utf-8"))
+    if not isinstance(items, list):
+        raise ValueError("a PDF manifest is a JSON list of {pdf, source_id, doi, title, "
+                         "how_found}")
+    added, failed = [], []
+    for i, it in enumerate(items):
+        pdf = pathlib.Path(str((it or {}).get("pdf") or "")).expanduser()
+        if not pdf.is_absolute():
+            pdf = mpath.parent / pdf
+        try:
+            added.append(add_pdf(root, pdf, source_id=it.get("source_id", ""),
+                                 doi=it.get("doi", ""), title=it.get("title", ""),
+                                 how_found=it.get("how_found", "")))
+        except Exception as exc:                         # noqa: BLE001: reported, never silent
+            failed.append({"entry": i, "pdf": str(pdf), "error": f"{type(exc).__name__}: {exc}"})
+    return {"added": added, "failed": failed}
+
+
 def readable_sources(root: str | pathlib.Path = ".") -> list:
-    """Stored source ids, in the order the search returned them."""
+    """Stored source ids, in the order the search returned them, then those added by hand.
+
+    One paper, one source: where a DOI is held twice, JATS full text is read in preference to a
+    PDF, and any full text in preference to an abstract. Two stores of one paper would each
+    yield the same records, and the duplicates would look like independent evidence.
+    """
     p = paths(root)
     if not p["search"].exists():
         return []
     rec = json.loads(p["search"].read_text(encoding="utf-8"))
+    doi = lambda e: _normal_doi(e.get("doi"))                     # noqa: E731
+    full = [e for e in rec["papers"] if e["outcome"] == "full_text" and doi(e)]
+    jats_dois = {doi(e) for e in full if e.get("route") != LOCAL_PDF}
+    full_dois = {doi(e) for e in full}
     out = []
     for e in rec["papers"]:
+        if e.get("route") == LOCAL_PDF and doi(e) in jats_dois:
+            continue
+        if e["outcome"] == "abstract_only" and doi(e) and doi(e) in full_dois:
+            continue
         if e["outcome"] in ("full_text", "abstract_only") and e["source_id"]:
             d = store_dirname(e["source_id"])
             if (p["sources"] / d / "full.txt").exists() and d not in out:
@@ -288,7 +447,9 @@ def _identity_declaration(tiers: list, ordinal_within: list, names: set) -> dict
         if unknown:
             raise ValueError(f"identity tier {'+'.join(tier)} names fields nobody ratified: "
                              f"{unknown} (ratified: {sorted(names)})")
-    unknown = [f for f in ordinal_within if f not in names]
+    # An anchor level (`@sentence`, `@span`) scopes the ordinal by the place a record was read
+    # from rather than by a field, so it names no field and is not checked against them.
+    unknown = [f for f in ordinal_within if f not in names and f not in ANCHOR_LEVELS]
     if unknown:
         raise ValueError(f"--ordinal-within names fields nobody ratified: {unknown}")
     chain = [t[0] if len(t) == 1 else list(t) for t in tiers]
@@ -301,7 +462,7 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
          identity_chain: Optional[list] = None, ordinal_within: Optional[list] = None,
          evidence_grounded: Optional[list] = None, grounding_mode: str = "lexical",
          grounding_model: str = "sonnet",
-         force: bool = False, plugin_version: str = "") -> dict:
+         force: bool = False, plugin_version: str = "", run_mode: str = "fat") -> dict:
     """Write the prompts and `run.json` for this project. Decides nothing about the science.
 
     Every argument without a default is a choice the researcher ratifies, which is why there is
@@ -321,7 +482,14 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
                          f"(ratified: {sorted(names)})")
     if not models:
         raise ValueError("no extraction models given")
-    tiers = [list(t) for t in (identity_chain or [[identity_field]])]
+    if run_mode not in RUN_MODES:
+        raise ValueError(f"run_mode is one of {sorted(RUN_MODES)}, not {run_mode!r}")
+    if run_mode == "lean" and len(models) != 1:
+        raise ValueError("a lean run has ONE reader (D-208); the fat run is the ensemble")
+    # An EMPTY chain is a statement, not a missing argument: a claim has no identifying value
+    # worth matching on, so its readings align by where they were read (`@sentence`) alone.
+    tiers = [list(t) for t in (identity_chain if identity_chain is not None
+                               else [[identity_field]])]
     identity = _identity_declaration(tiers, ordinal_within or [], names)
     unknown = [f for f in (evidence_grounded or []) if f not in names]
     if unknown:
@@ -415,6 +583,14 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
         # the 183-paper wave, so an honest run never trips it.
         "fuse": {"max_calls": 30 * n, "max_tokens": 400_000 * n},
     }
+    # D-208: the run mode, written out key by key so a config says what it does.
+    cfg.update(RUN_MODES[run_mode])
+    if run_mode == "lean" and not min_populated_fields:
+        cfg["min_populated_fields"] = 1
+        cfg["_single_pass_note"] = (
+            "Lean run (D-208): one reader, and the second signal is the one-check judge, which "
+            "reads every record. min_populated_fields=1 meets the single-pass floor; it is not "
+            "calibrated and is not claimed to be.")
     # D-203: the uncertainty groups the spec ratified, so the gate checks what the extractor is
     # told to report. Derived from the spec, so it adds nothing; written only when there are any,
     # so a spec without them plans byte-for-byte as before.
@@ -480,6 +656,10 @@ FLOW = (
     ("assessed_full_text", "assessed as full text", "search.json: full_text"),
     ("assessed_abstract_only", "assessed as abstract only, the ratified fallback",
      "search.json: abstract_only"),
+    ("identified_other_methods", "added by hand from a PDF the researcher held (PRISMA 2020: "
+     "identification via other methods)", "search.json: papers with route local_pdf"),
+    ("assessed_other_methods", "of those, stored and assessed as full text",
+     "search.json: local_pdf papers whose store exists"),
     ("read", "actually read by the pipeline", "one scored.json per paper"),
     ("contributed_records", "papers that yielded at least one record", "the run manifest"),
     ("yielded_nothing", "read and reported nothing that qualified, a recorded negative",
@@ -509,6 +689,7 @@ def prisma(root: str | pathlib.Path = ".") -> dict:
         manifest = json.loads((p["run"] / "manifest.json").read_text(encoding="utf-8"))
     per_paper = manifest.get("per_paper") or []
     done = [r for r in per_paper if r.get("status") == "done"]
+    local = [e for e in rec.get("papers", []) if e.get("route") == LOCAL_PDF]
 
     counted = {
         "identified": c.get("hits"),
@@ -517,18 +698,32 @@ def prisma(root: str | pathlib.Path = ".") -> dict:
         "excluded_retracted": c.get("retracted", 0),
         "assessed_full_text": c.get("full_text", 0),
         "assessed_abstract_only": c.get("abstract_only", 0),
+        "identified_other_methods": len(local),
+        "assessed_other_methods": sum(
+            1 for e in local
+            if (p["sources"] / store_dirname(e["source_id"]) / "full.txt").exists()),
         "read": len(done) if per_paper else None,
         "contributed_records": sum(1 for r in done if r.get("n_records")) if per_paper else None,
         "yielded_nothing": sum(1 for r in done if not r.get("n_records")) if per_paper else None,
     }
+    if rec.get("query") is None:
+        # No query ran, so the database arm counted nothing; 0 would read as "ran and was clear".
+        for key in ("excluded_not_retrievable", "excluded_retracted", "assessed_full_text",
+                    "assessed_abstract_only"):
+            counted[key] = None
     reasons = {}
     for e in rec.get("papers", []):
         if e.get("outcome") in ("unreachable", "retracted") and e.get("why"):
             reasons[e["why"]] = reasons.get(e["why"], 0) + 1
 
-    lines = [f"# PRISMA flow, emitted {_now()}", "",
-             f"Query, as ratified and executed: `{rec.get('query', '')}`", "",
-             f"Endpoint: {rec.get('endpoint', '')} · executed {rec.get('executed_at', '')}", "",
+    if rec.get("query") is None:
+        head = ["No database query has been run: every source was added by hand, so the "
+                "database stages read `not counted`.", ""]
+    else:
+        head = [f"Query, as ratified and executed: `{rec.get('query', '')}`", "",
+                f"Endpoint: {rec.get('endpoint', '')} · executed {rec.get('executed_at', '')}",
+                ""]
+    lines = [f"# PRISMA flow, emitted {_now()}", "", *head,
              "| stage | n | what it counts | read from |", "|---|---:|---|---|"]
     for key, what, source in FLOW:
         n = counted.get(key)

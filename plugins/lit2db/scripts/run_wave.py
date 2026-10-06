@@ -177,6 +177,45 @@ _BILLING_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 # tests that call `call_agent` directly.
 _CHILD_ENV = None
 
+# THE LEAN RUN (D-208). Measured 2026-10-06: a headless `claude -p` that only replies "ok" costs
+# about 50,000 tokens with the full harness (every MCP server, skill and setting the researcher
+# has installed rides along), and about 12,000 stripped. A paper is about 15,000 tokens, so on the
+# first review wave most of every call was harness, and each tool turn re-read all of it. Set once
+# in main() from the config, like `_CHILD_ENV`; the fat run (the default) leaves both off.
+_STRIPPED = False
+_LEAN_SYSTEM_PROMPT = ("You are a component of lit2db, a pipeline that extracts and verifies "
+                       "evidence from scientific papers. Follow the task exactly, and reply in "
+                       "exactly the format it asks for.")
+
+
+def harness_flags(tools) -> list:
+    """The CLI flags that strip a spawned agent down to the task (D-208).
+
+    `tools` is the comma-separated tool list the task needs: "" when the source is pasted into
+    the prompt and the answer comes back as the reply, "Read,Write" when the agent must read the
+    store and write its own file.
+    """
+    if not _STRIPPED:
+        return []
+    return ["--system-prompt", _LEAN_SYSTEM_PROMPT, "--setting-sources", "",
+            "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+            "--disable-slash-commands", "--tools", "Read,Write" if tools is None else tools]
+
+
+def source_block(store: pathlib.Path) -> str:
+    """The stored text pasted into a prompt (D-208), so a lean call needs no tool turn to read it.
+
+    `full.txt` is still the only coordinate system: a quote copied from this block is a quote
+    from `full.txt`, character for character, so offsets resolve exactly as before.
+    """
+    text = (pathlib.Path(store) / "full.txt").read_text(encoding="utf-8")
+    return ("\n\n## THE SOURCE, pasted in full (this is `full.txt`; do not read any file)\n\n"
+            "<<<FULL_TXT\n" + text + "\nFULL_TXT>>>\n")
+
+
+INLINE_REPLY = ("\n\nTHE SOURCE IS PASTED BELOW. Do not read or write any file and do not use "
+                "any tool: read the pasted text once, then reply with the JSON and nothing else.")
+
 
 class CredentialFailure(RuntimeError):
     """The run cannot authenticate. Stops the wave, like the fuse, rather than per paper."""
@@ -226,7 +265,8 @@ def _seconds_until_reset(text: str, default: int) -> int:
 
 def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
                fuse: Fuse, stage: str = "", unit: str = "", read_dirs: tuple = (),
-               timeout: int = 1800, retries: int = 3, backoff: int = 900) -> dict:
+               timeout: int = 1800, retries: int = 3, backoff: int = 900,
+               tools: str | None = None) -> dict:
     """One headless agent invocation. Returns {ok, text, tokens, attempts}.
 
     `read_dirs` MUST include the source store. A headless agent cannot pause to ask for a
@@ -237,7 +277,7 @@ def call_agent(prompt: str, model: str, *, label: str, cwd: pathlib.Path,
     being loud rather than empty is why it took one run to find instead of a whole wave.
     """
     cmd = ["claude", "-p", prompt, "--model", model,
-           "--output-format", "json", "--permission-mode", "acceptEdits"]
+           "--output-format", "json", "--permission-mode", "acceptEdits"] + harness_flags(tools)
     for d in (str(cwd), *(str(x) for x in read_dirs)):
         cmd += ["--add-dir", d]
     last = ""
@@ -325,6 +365,17 @@ def run_passes(paper: str, cfg: dict, pdir: pathlib.Path, fuse: Fuse) -> tuple[l
                            _spec_context_for(cfg["spec"]) if cfg.get("spec") else "")
                   + "\n\nYou are ONE independent pass of an ensemble. Do not read any other "
                     "pass's output directory. Write only to your own out_dir.")
+        if cfg.get("source_inline"):
+            r = call_agent(prompt + INLINE_REPLY + source_block(store), models[i],
+                           label=f"{paper} pass{i + 1}/{models[i]}", cwd=pdir, fuse=fuse,
+                           stage="extract", unit=paper, read_dirs=(store,), tools="",
+                           timeout=cfg.get("_call_timeout", 1800))
+            parsed = _extract_json(r.get("text") or "") if r.get("ok") else None
+            if parsed is not None and "records" in parsed:
+                done.write_text(json.dumps(parsed, indent=1))
+            else:
+                (out_dir / "reply_raw.txt").write_text(r.get("text") or "")
+            return i, r
         return i, call_agent(prompt, models[i], label=f"{paper} pass{i + 1}/{models[i]}",
                              cwd=pdir, fuse=fuse, stage="extract", unit=paper,
                              read_dirs=(store,), timeout=cfg.get("_call_timeout", 1800))
@@ -426,7 +477,10 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     # offsets were historically resolved in `assemble`, one stage too late for a claim to be
     # aligned by the place it was read from (M13).
     if uses_anchors(cfg["identity_fields"]):
-        passes = anchor_passes(passes, store.read_text(encoding="utf-8"))
+        # The store's TEXT, named apart from the store DIRECTORY bound below: the first anchored
+        # wave (a review, 2026-10-05) failed every paper here on an unbound `store`.
+        full_txt = pathlib.Path(cfg["stores"]) / paper / "full.txt"
+        passes = anchor_passes(passes, full_txt.read_text(encoding="utf-8"))
     merged = merge_passes(passes, identity_fields=cfg["identity_fields"])
     merged["_passes"] = passes
     (pdir / "merged.json").write_text(json.dumps(
@@ -451,10 +505,42 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     values = json.dumps([{ "record_id": r["record_id"],
                            "fields": {f["field_name"]: f.get("value") for f in r["fields"]}}
                          for r in merged["records"]], indent=1)
-    hr = call_agent(hp.replace("{STORE}", str(store)).replace("{VALUES}", values),
-                    cfg["hunter_model"], label=f"{paper} hunter", cwd=pdir, fuse=fuse,
-                    stage="hunter", unit=paper, read_dirs=(store,),
-                    timeout=cfg.get("_call_timeout", 1800))
+    inline = bool(cfg.get("source_inline"))
+    where = "(pasted below)" if inline else str(store)
+    precomputed = None
+    if cfg.get("judge_hunts"):
+        # ONE CHECK PER PAPER (D-208, the lean run): one reading by the judge model that hunts
+        # for contradictions in every record AND renders the judge's verdict on every record.
+        # The hunter's and the judge's own instructions are reused verbatim; only the output is
+        # combined. It runs where the hunter ran, before selection, so selection still sees the
+        # contradictions; the verdicts it returns are applied to the records selection sends
+        # to judgment, exactly as separately judged verdicts would be.
+        jt0 = pathlib.Path(cfg["judge_prompt"]).read_text(encoding="utf-8")
+        claims = "\n".join(f"[{r['record_id']}] {claim_text(r)}" for r in merged["records"])
+        prompt = ("# PART 1 of 2: the contradiction hunt\n\n"
+                  + hp.replace("{STORE}", where).replace("{VALUES}", values)
+                  + "\n\n# PART 2 of 2: the judgment, for EVERY record listed in part 1\n\n"
+                  + jt0.replace("{STORE}", where).replace("{CLAIM}", claims)
+                  + "\n\n# ONE REPLY FOR BOTH PARTS\nIgnore the two output sections above. Do "
+                    "the hunt and the judgment independently, judging each record on its own; a "
+                    "verdict on one record is not evidence about another. Return ONE JSON object: "
+                    '{"contradiction_search": "clean|found", "contradictions": [...as in part 1], '
+                    '"verdicts": [{"record_id": "...", "verdict": "SUPPORTED|PARTIAL|UNSUPPORTED", '
+                    '"weakest_supported_claim": "...", "reasoning": "...", "overreach": []}]}')
+        hr = call_agent(prompt + (INLINE_REPLY + source_block(store) if inline else ""),
+                        cfg["judge_model"], label=f"{paper} check", cwd=pdir, fuse=fuse,
+                        stage="check", unit=paper, read_dirs=(store,),
+                        tools="" if inline else None, timeout=cfg.get("_call_timeout", 1800))
+        (pdir / "check_raw.txt").write_text(hr["text"] or "(no output)")
+        whole = _extract_json(hr["text"] or "") or {}
+        precomputed = _parse_verdicts(json.dumps(whole.get("verdicts") or []),
+                                      [r["record_id"] for r in merged["records"]]) if whole else {}
+    else:
+        hr = call_agent(hp.replace("{STORE}", where).replace("{VALUES}", values)
+                        + (INLINE_REPLY + source_block(store) if inline else ""),
+                        cfg["hunter_model"], label=f"{paper} hunter", cwd=pdir, fuse=fuse,
+                        stage="hunter", unit=paper, read_dirs=(store,),
+                        tools="" if inline else None, timeout=cfg.get("_call_timeout", 1800))
     hunt = {"state_by_record": {}, "contradictions": []}
     parsed = _extract_json(hr["text"] or "")
     if parsed:
@@ -530,7 +616,8 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     jt = pathlib.Path(cfg["judge_prompt"]).read_text(encoding="utf-8")
     jdir = pdir / "judge"
     jdir.mkdir(exist_ok=True)
-    batch_n = max(1, int(cfg.get("judge_batch_size", 1)))
+    jb = cfg.get("judge_batch_size", 1)
+    batch_n = max(1, len(scored) if jb == "all" else int(jb))
 
     _claim = claim_text
 
@@ -548,10 +635,10 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
         """
         ids = [r["record_id"] for r in batch]
         if batch_n == 1:
-            p = jt.replace("{STORE}", str(store)).replace("{CLAIM}", _claim(batch[0]))
+            p = jt.replace("{STORE}", where).replace("{CLAIM}", _claim(batch[0]))
         else:
             claims = "\n".join(f"[{r['record_id']}] {_claim(r)}" for r in batch)
-            p = (jt.replace("{STORE}", str(store)).replace("{CLAIM}", claims)
+            p = (jt.replace("{STORE}", where).replace("{CLAIM}", claims)
                  + "\n\n## Several claims in one call\n"
                    f"You are given {len(batch)} claims, each prefixed with its record id in "
                    "square brackets. **Judge each one INDEPENDENTLY against the source.** A "
@@ -560,9 +647,10 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                    "Return a JSON ARRAY, one object per claim, each carrying its "
                    '`record_id` alongside the fields described above.')
         label = f"{paper} judge/{'+'.join(ids)}" if batch_n > 1 else f"{paper} judge/{ids[0]}"
-        r = call_agent(p, cfg["judge_model"], label=label, cwd=pdir, fuse=fuse,
+        r = call_agent(p + (INLINE_REPLY + source_block(store) if inline else ""),
+                       cfg["judge_model"], label=label, cwd=pdir, fuse=fuse,
                        stage="judge", unit=paper, read_dirs=(store,),
-                       timeout=cfg.get("_call_timeout", 1800))
+                       tools="" if inline else None, timeout=cfg.get("_call_timeout", 1800))
         (jdir / f"{'_'.join(ids)}.raw.txt").write_text(r["text"] or "")
 
         parsed = _parse_verdicts(r["text"] or "", ids)
@@ -578,7 +666,18 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
     recs = [by_id[rid] for rid in pick["to_judge"]]
     batches = [recs[i:i + batch_n] for i in range(0, len(recs), batch_n)]
     verdicts, unjudged, judge_calls_ran = {}, [], 0
-    if batches:
+    if precomputed is not None:
+        # The one check already judged every record; take the verdicts for the records
+        # selection sends to judgment, and count the call that produced them.
+        judge_calls_ran = int(bool(hr["ok"]))
+        for r in recs:
+            v = precomputed.get(r["record_id"])
+            if v and v.get("verdict") in VERDICT_TO_STATE:
+                verdicts[r["record_id"]] = v
+            else:
+                unjudged.append(r["record_id"])
+        batches = [recs] if recs else []
+    elif batches:
         with cf.ThreadPoolExecutor(max_workers=cfg.get("judge_concurrency", 4)) as ex:
             for ran, pairs in ex.map(judge_batch, batches):
                 judge_calls_ran += bool(ran)
@@ -954,8 +1053,12 @@ def main() -> int:
         log("DRY RUN — no model calls made")
         return 0
 
-    global _CHILD_ENV
+    global _CHILD_ENV, _STRIPPED
     _CHILD_ENV = child_env(cfg, os.environ)
+    _STRIPPED = cfg.get("harness") == "stripped"
+    log(f"run mode: {cfg.get('run_mode', 'fat')} (harness {cfg.get('harness', 'full')}, source "
+        f"{'pasted in' if cfg.get('source_inline') else 'read by tool'}, judge batch "
+        f"{cfg.get('judge_batch_size', 1)}, {'one check' if cfg.get('judge_hunts') else 'hunter then judge'})")
     stripped = [v for v in _BILLING_VARS if v in os.environ and v not in _CHILD_ENV]
     log("billing: " + ("an API key, as this config asked (`bill_to_api_key`)"
                        if cfg.get("bill_to_api_key") else

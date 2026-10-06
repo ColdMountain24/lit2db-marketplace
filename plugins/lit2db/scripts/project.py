@@ -7,6 +7,10 @@ Run it through the launcher so the interpreter is one that can import the plugin
 
     preview --query Q --limit N      what a query returns, nothing downloaded (before ratifying)
     fetch   --limit N [--abstracts]  run the RATIFIED query from lit2db/spec.json, store papers
+    add-pdf --pdf FILE (--doi D | --source-id S) [--title T] [--how-found H]
+    add-pdf --manifest FILE          store PDFs you already hold (no JATS anywhere) as sources;
+                                     the manifest is a JSON list of {pdf, source_id, doi, title,
+                                     how_found}. A later fetch keeps them.
     plan    --entity-type T --identity F --models M [M ...] --judge-model J --hunter-model H
             --audit-fraction X [--threshold 0.95] [--min-fields N]
             [--identity-chain A+B A ...] [--ordinal-within F] [--force]
@@ -66,6 +70,15 @@ def main(argv=None) -> int:
                    help="store the abstract when no open full text exists (only if the "
                         "ratified scope admits abstracts)")
 
+    s = sub.add_parser("add-pdf")
+    s.add_argument("--pdf", help="one PDF to add")
+    s.add_argument("--manifest", help="a JSON list of {pdf, source_id, doi, title, how_found}")
+    s.add_argument("--doi", default="", help="the paper's DOI; the source id becomes DOI:<doi>")
+    s.add_argument("--source-id", default="", help="used only when there is no DOI")
+    s.add_argument("--title", default="")
+    s.add_argument("--how-found", default="",
+                   help="how this paper was found (cited by X, suggested by Y), for the record")
+
     s = sub.add_parser("plan")
     s.add_argument("--entity-type", required=True)
     s.add_argument("--identity", required=True, help="the ratified field that identifies a record")
@@ -73,6 +86,10 @@ def main(argv=None) -> int:
                    help="identity tiers tried in order, each one or more ratified fields joined "
                         "by '+': --identity-chain molecule+dose+metric molecule+metric molecule. "
                         "Use this whenever one named thing can carry several rows.")
+    s.add_argument("--run-mode", choices=["fat", "lean"], default="fat",
+                   help="fat: k readers, hunter, judge, full harness (the original design). "
+                        "lean: one read and one check per paper, stripped harness, source "
+                        "pasted in (D-208)")
     s.add_argument("--ordinal-within", nargs="+", default=[], metavar="FIELD",
                    help="scope inside which records nothing identified may be aligned by order "
                         "of appearance. Without it such records stay singletons.")
@@ -142,6 +159,14 @@ def main(argv=None) -> int:
             out = project.preview(a.query, limit=a.limit, get=get)
         elif a.step == "fetch":
             out = project.fetch(a.root, limit=a.limit, allow_abstracts=a.abstracts, get=get)
+        elif a.step == "add-pdf":
+            if bool(a.pdf) == bool(a.manifest):
+                raise ValueError("give exactly one of --pdf or --manifest")
+            if a.manifest:
+                out = project.add_pdfs(a.root, a.manifest)     # a failed entry exits nonzero
+            else:
+                out = project.add_pdf(a.root, a.pdf, source_id=a.source_id, doi=a.doi,
+                                      title=a.title, how_found=a.how_found)
         elif a.step == "plan":
             chain = [tier.split("+") for tier in (a.identity_chain or [])] or None
             out = project.plan(a.root, entity_type=a.entity_type, identity_field=a.identity,
@@ -150,7 +175,7 @@ def main(argv=None) -> int:
                                judge_audit_fraction=a.audit_fraction,
                                auto_accept_threshold=a.threshold,
                                min_populated_fields=a.min_fields,
-                               identity_chain=chain, ordinal_within=a.ordinal_within,
+                               identity_chain=chain, ordinal_within=a.ordinal_within, run_mode=a.run_mode,
                                evidence_grounded=a.evidence_grounded,
                                grounding_mode=a.grounding_mode,
                                grounding_model=a.grounding_model,
@@ -255,7 +280,7 @@ def main(argv=None) -> int:
                           "error": f"{type(exc).__name__}: {exc}"}, indent=1))
         return 1
     print(json.dumps({"ok": True, "step": a.step, **out}, indent=1, default=str))
-    return 0 if out.get("preflight_ok", True) else 1
+    return 0 if out.get("preflight_ok", True) and not out.get("failed") else 1
 
 
 if __name__ == "__main__":
