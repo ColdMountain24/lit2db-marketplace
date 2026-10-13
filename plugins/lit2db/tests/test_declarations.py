@@ -66,14 +66,18 @@ def test_no_library_module_is_unreachable():
     modules = {p.relative_to(SRC).with_suffix("").as_posix().replace("/__init__", "")
                for p in _py_files(SRC)}
     modules.discard("__init__")
-    text = _all_source_text()
+    # A shell launcher in bin/ that runs a module (`-m lit2db.cli`) is a running path too: it is
+    # how the `lit2db` command a researcher types reaches the code (D-211).
+    text = _all_source_text() + "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted((ROOT / "bin").iterdir()) if p.is_file())
 
     unreachable = []
     for m in sorted(modules):
         leaf = m.split("/")[-1]
         # any import form: `from .x import`, `from lit2db.x import`, `from ..x import`,
         # `import lit2db.x`, or a subpackage referenced as `contracts.x`
-        pattern = rf"(from\s+\.*[\w.]*\b{re.escape(leaf)}\b\s+import|import\s+[\w.]*\b{re.escape(leaf)}\b)"
+        pattern = (rf"(from\s+\.*[\w.]*\b{re.escape(leaf)}\b\s+import|import\s+[\w.]*\b{re.escape(leaf)}\b"
+                   rf"|-m\s+lit2db\.{re.escape(leaf)}\b)")
         if not re.search(pattern, text):
             unreachable.append(m)
     assert not unreachable, (

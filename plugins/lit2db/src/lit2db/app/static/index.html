@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" data-size="small">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lit2db</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Literata:opsz,wght@7..72,500;7..72,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="logo" href="#" data-go="home"><i><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="9" height="2.2" rx="1.1" fill="#fff"/><rect x="3" y="8.9" width="14" height="2.2" rx="1.1" fill="#fff"/><rect x="3" y="13.8" width="14" height="2.2" rx="1.1" fill="#fff"/></svg></i>lit2db</a>
+  <span class="crumb" id="crumb"></span>
+  <span class="sp"></span>
+  <span class="size" role="group" aria-label="Text size">
+    <button class="s" data-size="small" title="Small text">A</button>
+    <button class="l" data-size="large" title="Large text">A</button>
+  </span>
+  <button class="help" id="help">Help</button>
+</header>
+<nav class="progress" id="progress" aria-label="Progress" hidden></nav>
+<main id="main"></main>
+
+<div class="modal" id="helpbox" hidden>
+  <div class="card">
+    <h2>How lit2db works</h2>
+    <p class="sub">Six steps, in order. You can go back to any step you have finished.</p>
+    <p><b>1. Your question.</b> Say what you want to find out, in your own words.</p>
+    <p><b>2. What to collect.</b> lit2db drafts the columns of your table. You tick what you want.</p>
+    <p><b>3. Which papers.</b> You see what the search finds before anything is downloaded.</p>
+    <p><b>4. Reading.</b> lit2db reads each paper on this Mac, with your own Claude plan.</p>
+    <p><b>5. Checking.</b> Values it was not sure about wait for you, beside the sentence they came from.</p>
+    <p><b>6. Spreadsheets.</b> Three files you can open in Excel or Numbers.</p>
+    <p class="hint">Your databases are kept in your Documents folder, under lit2db. To come back later, open Terminal and type <b>lit2db</b>.</p>
+    <div class="answer"><button class="yes" id="helpclose">Got it</button></div>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

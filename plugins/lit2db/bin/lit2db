@@ -1,0 +1,14 @@
+#!/bin/sh
+# `lit2db`, the command a researcher types (D-211). Resolves its own symlink (the installer puts
+# one on PATH), then runs the CLI under the same launcher the plugin uses, so a stock Mac with no
+# suitable Python still works (bin/lit2db-python fetches one through uv).
+SELF=$0
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF")
+  case $LINK in
+    /*) SELF=$LINK ;;
+    *) SELF=$(dirname -- "$SELF")/$LINK ;;
+  esac
+done
+ROOT=$(CDPATH= cd -- "$(dirname -- "$SELF")/.." && pwd)
+exec sh "$ROOT/bin/lit2db-python" -m lit2db.cli "$@"
