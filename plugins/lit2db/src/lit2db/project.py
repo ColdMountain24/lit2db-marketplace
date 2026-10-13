@@ -597,6 +597,13 @@ def plan(root: str | pathlib.Path = ".", *, entity_type: str, identity_field: st
     groups = spec.uncertainty_groups()
     if groups:
         cfg["uncertainty_groups"] = groups
+    # The fields the researcher locked ("every row must have this"), so the gate holds a row
+    # missing one out of the accepted table. `FieldSpec.required` reached no run until this
+    # (found 2026-10-03, M12): BBB's four locked fields were reported, never enforced. Written
+    # only when there are any, like the groups, so a spec with none plans as before.
+    required = [f.name for f in spec.fields if f.required]
+    if required:
+        cfg["required_fields"] = required
     cfg["_generated_hash"] = _config_hash(cfg)
     p["config"].write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     return {"config": str(p["config"]), "papers": n,

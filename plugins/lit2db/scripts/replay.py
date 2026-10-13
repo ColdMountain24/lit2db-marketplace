@@ -188,7 +188,8 @@ def replay_one(pdir: pathlib.Path, cfg: dict, db: str | None = None) -> dict:
                            require_contradiction_search=False,
                            review_lane=cfg["review_lane"],
                            min_populated_fields=cfg.get("min_populated_fields", 0),
-                           uncertainty_groups=cfg.get("uncertainty_groups") or {})
+                           uncertainty_groups=cfg.get("uncertainty_groups") or {},
+                           required_fields=cfg.get("required_fields") or ())
                 if g.get("written"):
                     written += 1
                 for reason in (g.get("reasons") or []):

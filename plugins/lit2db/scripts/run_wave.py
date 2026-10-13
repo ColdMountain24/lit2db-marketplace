@@ -754,7 +754,8 @@ def _do_paper(paper: str, cfg: dict, out: pathlib.Path, fuse: Fuse) -> dict:
                 db_path=cfg["db_path"], autoaccept=cfg["auto_accept_threshold"],
                 require_contradiction_search=True, review_lane=cfg.get("review_lane", []),
                 min_populated_fields=cfg.get("min_populated_fields", 0),
-                uncertainty_groups=cfg.get("uncertainty_groups") or {})
+                uncertainty_groups=cfg.get("uncertainty_groups") or {},
+                required_fields=cfg.get("required_fields") or ())
             # EVERY record enters the candidate pool, whatever the gate said. A record that
             # missed the bar still carries its quote, offset, grounding score, agreement
             # fraction and judge verdict — which is most of the work of confirming it by hand.
@@ -938,6 +939,14 @@ def preflight(cfg: dict, papers: list) -> list[str]:
                     # above: the extractor is told to report spread and n, and the gate never
                     # checks that it did. Hand-edited configs are where this happens, because
                     # `plan` writes the groups and refuses to overwrite an edited run.json.
+                    locked = sorted(f.name for f in load_spec(str(spec_path)).fields
+                                    if f.required)
+                    if locked != sorted(cfg.get("required_fields") or []):
+                        problems.append(
+                            f"the ratified spec locks {locked} (every row must have them) but "
+                            f"the config enforces {sorted(cfg.get('required_fields') or [])}. "
+                            f"Re-run `plan` (or copy them into `required_fields`) so the gate "
+                            f"holds what the researcher locked.")
                     declared = load_spec(str(spec_path)).uncertainty_groups()
                     applied = cfg.get("uncertainty_groups") or {}
                     if declared != applied:

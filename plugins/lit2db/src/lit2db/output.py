@@ -81,7 +81,8 @@ def upsert(record: dict, composite_confidence: float, db_path: str,
            require_contradiction_search: bool = False,
            review_lane: list | None = None,
            min_populated_fields: int = DEFAULT_MIN_POPULATED_FIELDS,
-           uncertainty_groups: dict | None = None) -> dict:
+           uncertainty_groups: dict | None = None,
+           required_fields: list | tuple | None = None) -> dict:
     """The HARD write-gate. Writes IFF `gate_reasons` returns nothing.
 
     'deny' wins. A denied record is NOT written and its reasons come back for routing to the
@@ -114,7 +115,8 @@ def upsert(record: dict, composite_confidence: float, db_path: str,
     rec = ExtractedRecord.model_validate(record)  # shape first: an unparseable record cannot be gated
     reasons = gate_reasons(json.loads(rec.model_dump_json()), composite_confidence, autoaccept,
                            require_contradiction_search=require_contradiction_search,
-                           review_lane=lane, min_populated_fields=min_populated_fields,
+                           review_lane=lane, required_fields=tuple(required_fields or ()),
+                           min_populated_fields=min_populated_fields,
                            uncertainty_groups=uncertainty_groups)
     if reasons:
         return {"written": False, "decision": "deny", "reasons": reasons,

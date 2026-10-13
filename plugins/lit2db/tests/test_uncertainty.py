@@ -401,3 +401,38 @@ def test_plan_writes_the_groups_and_preflight_refuses_a_config_without_them(tmp_
     assert not any("uncertainty" in x for x in run_wave.preflight(cfg, cfg["papers"]))
     cfg.pop("uncertainty_groups")
     assert any("declares uncertainty groups" in x for x in run_wave.preflight(cfg, cfg["papers"]))
+
+
+def test_plan_writes_the_locked_fields_and_the_gate_holds_a_row_without_one(tmp_path):
+    """`FieldSpec.required` reached no run until 2026-10-13: locked, reported, never enforced."""
+    from lit2db import project
+    run_wave = pytest.importorskip("run_wave")
+    fields = companion_fields("x", "U1")
+    spec = _spec(fields).model_dump(mode="json")
+    for f in spec["fields"]:
+        if f["name"] == "x":
+            f["required"] = True
+    p = project.paths(tmp_path)
+    p["spec"].parent.mkdir(parents=True, exist_ok=True)
+    p["spec"].write_text(json.dumps(spec), encoding="utf-8")
+    (p["sources"] / "PMC1").mkdir(parents=True)
+    (p["sources"] / "PMC1" / "full.txt").write_text(QUOTE, encoding="utf-8")
+    (p["sources"] / "PMC1" / "sections.json").write_text("[]", encoding="utf-8")
+    p["search"].parent.mkdir(parents=True, exist_ok=True)
+    p["search"].write_text(json.dumps({"papers": [{"outcome": "full_text",
+                                                   "source_id": "PMC1"}]}), encoding="utf-8")
+    out = project.plan(tmp_path, entity_type="t", identity_field="x", models=["a"] * 3,
+                       judge_model="j", hunter_model="h", judge_audit_fraction=0.2)
+    cfg = json.loads(pathlib.Path(out["config"]).read_text())
+    assert cfg["required_fields"] == ["x"]
+    run_wave._spec_context_for.cache_clear()
+    assert not any("locks" in x for x in run_wave.preflight(cfg, cfg["papers"]))
+    cfg.pop("required_fields")
+    assert any("locks ['x']" in x for x in run_wave.preflight(cfg, cfg["papers"]))
+
+    db = str(tmp_path / "g.db")
+    rec = _full(x=1.2, name="treated")
+    rec["fields"] = [f for f in rec["fields"] if f["field_name"] != "x"]
+    from lit2db.output import upsert
+    g = upsert(rec, 1.0, db, required_fields=["x"])
+    assert not g["written"] and any("locked field 'x' is absent" in r for r in g["reasons"])
