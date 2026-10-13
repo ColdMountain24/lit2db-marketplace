@@ -179,8 +179,7 @@ async function showHome() {
     ${list ? `<div class="card">${list}</div>` : ""}
     <div class="card">
       <h2>Start a new database</h2>
-      <p class="sub">Give it a short name you will recognise. You can describe it properly next.</p>
-      <div class="newrow"><input type="text" id="newname" placeholder="For example: Antibodies and the brain">
+      <div class="newrow" style="margin-top:.8rem"><input type="text" id="newname" placeholder="e.g. BBB uptake">
         <button class="yes" id="newgo">Start</button></div>
     </div>
     <div class="reassure"><span class="i">i</span><span>Kept on this Mac, in ${esc(h.home)}.</span></div>`;
