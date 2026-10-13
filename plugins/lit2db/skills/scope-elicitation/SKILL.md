@@ -28,7 +28,7 @@ formalization — permitted, subject to ratification.
 
 ## Up-front driver: the ML task
 
-Resolve the **ML task first** (classification / regression / generative / knowledge_graph).
+Resolve the **purpose first** (reference / classification / regression / knowledge_graph / generative). `reference` is a curated table people look values up in, with no model trained on it (D-212).
 It drives schema shape, the negative-data policy, and the verification strategy downstream.
 Knowing it before schema design prevents costly rework.
 

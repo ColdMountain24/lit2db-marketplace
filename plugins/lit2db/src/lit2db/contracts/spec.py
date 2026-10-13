@@ -19,6 +19,9 @@ from ..uncertainty import ROLES as UNCERTAINTY_ROLES, SPREAD_TYPES
 
 
 class MLTask(str, Enum):
+    # A curated table people look values up in, with no model trained on it (D-212). Most
+    # researchers asked for this and had to pick a machine-learning task that was not theirs.
+    reference = "reference"
     classification = "classification"
     regression = "regression"
     generative = "generative"

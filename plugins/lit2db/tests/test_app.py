@@ -164,3 +164,36 @@ def test_the_command_speaks_in_sentences(tmp_path, capsys, monkeypatch):
     assert cli.main(["status"]) == 0
     assert "no databases yet" in capsys.readouterr().out
     assert cli.main(["nonsense"]) == 2
+
+
+def test_checking_in_the_page_keeps_the_review_rule(server, tmp_path):
+    """Checking moved into the page (2026-10-13). The rule moved with it: right or wrong is refused
+    on a record whose quote is not where it says, whatever the page sends."""
+    import shutil
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import review_ui
+    a, base = server
+    db, sources, _ = review_ui.seed_demo()
+    pid = ok(base, "/api/new", {"name": "Demo"})["id"]
+    p = app.Project(pathlib.Path(pid)).p
+    shutil.copy(db, p["db"])
+    shutil.rmtree(p["sources"])
+    shutil.copytree(sources, p["sources"])
+
+    q = ok(base, f"/api/check/queue?p={pid}&show=held")
+    assert q["counts"]["held"] == len(q["items"]) == 4
+    broken = next(i for i in q["items"] if i["record_id"] == "demoD")
+    view = ok(base, f"/api/check/record?p={pid}&record_id=demoD&source_id={broken['source_id']}")
+    assert view["verdicts_allowed"] == ["cant_tell"]
+    code, raw = call(base, "/api/check/verdict", {"p": pid, "record_id": "demoD",
+                                                  "source_id": broken["source_id"],
+                                                  "verdict": "right"})
+    assert code == 400 and not json.loads(raw)["ok"]
+
+    good = next(i for i in q["items"] if i["record_id"] != "demoD")
+    ok(base, "/api/check/verdict", {"p": pid, "record_id": good["record_id"],
+                                    "source_id": good["source_id"], "verdict": "wrong",
+                                    "note": "kept as typed"})
+    after = ok(base, f"/api/check/queue?p={pid}&show=checked")
+    assert after["counts"]["wrong"] == 1
+    assert [i["verdict"] for i in after["items"]] == ["wrong"]

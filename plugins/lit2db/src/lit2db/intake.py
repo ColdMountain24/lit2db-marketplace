@@ -50,7 +50,15 @@ KINDS = {
     "text": ("str", False),
 }
 SPREAD = "spread"
-ML_TASKS = ("classification", "regression", "knowledge_graph", "generative")
+ML_TASKS = ("reference", "classification", "regression", "knowledge_graph", "generative")
+# What the page offers, in the researcher's words (D-212). `generative` stays valid in a spec but
+# is not offered: nobody has asked for it, and every option shown is a question asked.
+PURPOSES = {
+    "reference": "A reference table to look values up",
+    "classification": "Predict a category, for example crosses or does not",
+    "regression": "Predict a number",
+    "knowledge_graph": "Map how things relate",
+}
 EPMC = "europepmc"
 
 
@@ -176,6 +184,7 @@ def default_rulings(proposal: dict) -> dict:
         "identity": list(proposal["identity"]),
         "normalized": [c["name"] for c in proposal["columns"] if c["normalized"]],
         "exclusions": [{"text": x, "on": True, "added": False} for x in proposal["exclusions"]],
+        "purpose": proposal["purpose"]["ml_task"],
     }
 
 
@@ -293,10 +302,19 @@ def build_spec(intake: dict, *, query: str, result_counts: Optional[dict] = None
                              "against their sentence for support: " + (", ".join(normalized)
                                                                        or "none"),
                   "payload": {"evidence_grounded": normalized}})
-    task = proposal["purpose"]["ml_task"]
-    items.append({"item_id": "L-PURPOSE", "kind": "axis_setting", "status": "ACCEPTED",
-                  "summary": proposal["purpose"]["plain"] or f"The table is for {task}.",
-                  "payload": {"ml_task": task}})
+    drafted_task = proposal["purpose"]["ml_task"]
+    task = rulings.get("purpose") or drafted_task
+    if task not in ML_TASKS:
+        raise ValueError(f"'{task}' is not a purpose lit2db knows")
+    items.append({"item_id": "L-PURPOSE", "kind": "axis_setting",
+                  "status": "ACCEPTED" if task == drafted_task else "ACCEPTED_WITH_EDIT",
+                  "edit_note": None if task == drafted_task else
+                  f"The researcher chose '{PURPOSES.get(task, task)}' over the drafted "
+                  f"'{PURPOSES.get(drafted_task, drafted_task)}'.",
+                  "summary": PURPOSES.get(task, task) + (
+                      f". {proposal['purpose']['plain']}" if task == drafted_task
+                      and proposal["purpose"]["plain"] else ""),
+                  "payload": {"ml_task": task, "drafted": drafted_task}})
     items.append({"item_id": "L-NEGATIVE", "kind": "axis_setting", "status": "ACCEPTED",
                   "summary": proposal["negative_data"], "payload": {}})
     inclusion = {}

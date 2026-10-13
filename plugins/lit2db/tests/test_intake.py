@@ -179,3 +179,19 @@ def test_plan_runs_on_what_the_page_built(drafted, tmp_path):
     assert out["papers"] == 1
     assert "species" in cfg["evidence_grounded_fields"]
     assert "strategy" in cfg["evidence_grounded_fields"]      # every category, as before
+
+
+def test_the_purpose_is_ruled_and_a_reference_table_is_one(drafted):
+    """D-212: most researchers want a table to look values up in, which was not an option."""
+    assert drafted["rulings"]["purpose"] == "regression"          # what the draft suggested
+    spec = intake.build_spec(drafted, query="q")
+    assert _status(spec, "L-PURPOSE")["status"] == "ACCEPTED"
+    drafted["rulings"]["purpose"] = "reference"
+    spec = intake.build_spec(drafted, query="q")
+    assert spec["ml_task"] == "reference"
+    item = _status(spec, "L-PURPOSE")
+    assert item["status"] == "ACCEPTED_WITH_EDIT" and "reference table" in item["edit_note"]
+    SchemaReadySpec.model_validate(spec)
+    drafted["rulings"]["purpose"] = "astrology"
+    with pytest.raises(ValueError, match="not a purpose"):
+        intake.build_spec(drafted, query="q")

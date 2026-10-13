@@ -59,7 +59,7 @@ sentence. A reason is one plain sentence.
      "qualifies": null}
   ],
   "identity": ["the column names that, all matching, make two rows the same thing, most important first"],
-  "purpose": {"ml_task": "regression | classification | knowledge_graph | generative",
+  "purpose": {"ml_task": "reference | classification | regression | knowledge_graph",
               "plain": "one plain sentence on what the table is for"},
   "negative_data": "one plain sentence: what happens when a paper reports nothing, or a null result",
   "exclusions": ["kinds of paper to leave out, one plain phrase each"],
@@ -86,6 +86,9 @@ sentence. A reason is one plain sentence.
   - `normalized`: true when the value is written in a standard form rather than copied as
     printed (a species written "mouse" where the paper says "mice", a unit tidied up). Such a
     value is checked against its sentence for support, not for the exact words.
+- `purpose.ml_task`: `reference` when the table is for looking values up or comparing them, which
+  is most questions; `classification` or `regression` only when the researcher said they want to
+  predict a category or a number; `knowledge_graph` when the question is about how things relate.
 - `identity`: two to four column names, most important first, each one of your columns.
 - `exclusions`: two to four, the obvious ones for this literature (for example reviews,
   corrections, conference abstracts, retracted papers are always left out anyway).

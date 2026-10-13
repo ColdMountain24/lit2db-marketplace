@@ -40,7 +40,11 @@ import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import sqlite3
+
 from .. import intake, project
+from ..output import record_adjudication, review_queue, tag_adjudicator
+from ..review import ALL_VERDICTS, candidate_payload, may_record, record_view
 
 STATIC = pathlib.Path(__file__).resolve().parent / "static"
 PLUGIN_ROOT = project.PLUGIN_ROOT
@@ -188,6 +192,10 @@ class Project:
         return {"total": len(papers), "done": len(done), "running": running,
                 "now": now_reading if running else "", "log": tail, "questions": questions,
                 "started": app.get("run_started"), "mode": app.get("run_mode"),
+                # Paused means the researcher pressed Pause. A run that ended with papers left
+                # (a reply that did not parse, a pass that failed) is not paused, and saying so
+                # read as a stall: measured on AP's first real run, 19 of 20 done.
+                "paused": bool(app.get("paused")) and not running,
                 "finished": bool(papers) and len(done) == len(papers)}
 
     def results(self) -> dict:
@@ -237,8 +245,6 @@ class App:
         self.here = pathlib.Path(here).resolve() if here else None
         self.port = port
         self.jobs = Jobs()
-        self.review_proc = None
-        self.review_for = None
         self.get = functools.partial(project.http_get,
                                      contact=os.environ.get("LIT2DB_CONTACT_EMAIL", ""))
 
@@ -405,36 +411,109 @@ class App:
                                  str(pr.p["config"])], cwd=str(pr.root), stdout=log,
                                 stderr=subprocess.STDOUT, start_new_session=True)
         app = pr.app()
-        app.update(run_pid=proc.pid, run_started=_now(), run_mode=mode)
+        app.update(run_pid=proc.pid, run_started=_now(), run_mode=mode, paused=False)
         pr.save_app(app)
         return {"pid": proc.pid}
 
     def pause(self, pr: Project) -> dict:
-        pid = pr.app().get("run_pid")
+        app = pr.app()
+        pid = app.get("run_pid")
         if pid and _alive(pid):
             os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+        app["paused"] = True
+        pr.save_app(app)
         return {"paused": True}
 
-    # step 5 and 6
-    def review(self, pr: Project) -> dict:
-        port = self.port + 1
-        if self.review_proc and self.review_proc.poll() is None and self.review_for == pr.root:
-            return {"url": f"http://127.0.0.1:{port}/"}
-        self.stop_review()
-        self.review_proc = subprocess.Popen(
-            [sys.executable, str(SCRIPTS / "review_ui.py"), "--db", str(pr.p["db"]),
-             "--sources", str(pr.p["sources"]), "--port", str(port), "--no-browser",
-             "--focus", "judge-supported"], cwd=str(pr.root),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.review_for = pr.root
-        time.sleep(0.8)
-        return {"url": f"http://127.0.0.1:{port}/"}
+    # step 5: checking, inside the page (AP, 2026-10-13: "a checking process showing up within
+    # the interface itself"). The same three library calls the review page makes, so the same
+    # rule holds: a verdict is refused unless the evidence it rules on can be shown.
+    def _verdicts(self, pr: Project) -> dict:
+        try:
+            con = sqlite3.connect(str(pr.p["db"]))
+            try:
+                return {(r[1], r[0]): {"verdict": r[2], "note": r[3]} for r in con.execute(
+                    "SELECT record_id, source_id, verdict, note FROM adjudications")}
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return {}
 
-    def stop_review(self):
-        if self.review_proc and self.review_proc.poll() is None:
-            self.review_proc.terminate()
-        self.review_proc = None
+    def check_queue(self, pr: Project, show: str) -> dict:
+        empty = {"counts": {"held": 0, "accepted": 0, "checked": 0, "right": 0, "wrong": 0,
+                            "cant_tell": 0}, "items": []}
+        if not pr.p["db"].exists():
+            return empty
+        db = str(pr.p["db"])
+        rows = review_queue(db, limit=5000, order="by_root_cause",
+                            unadjudicated_only=False)["queue"]
+        # The review queue is the candidate pool, which leaves out what the gate accepted.
+        # Checking accepted values is how the accepted table's error rate gets measured, so
+        # they are listed here too.
+        seen = {(r["record_id"], r["source_id"]) for r in rows}
+        try:
+            con = sqlite3.connect(db)
+            try:
+                for rid, sid, jv in con.execute("SELECT record_id, source_id, judge_verdict "
+                                                "FROM candidates WHERE decision = 'allow'"):
+                    if (rid, sid) not in seen:
+                        rows.append({"record_id": rid, "source_id": sid, "decision": "allow",
+                                     "judge_verdict": jv, "root_cause_class": ""})
+            finally:
+                con.close()
+        except sqlite3.Error:
+            pass
+        verdicts = self._verdicts(pr)
+        counts = dict(empty["counts"])
+        items = []
+        for r in rows:
+            v = verdicts.get((r["source_id"], r["record_id"]))
+            accepted = r.get("decision") == "allow"
+            counts["accepted" if accepted else "held"] += 1
+            if v:
+                counts["checked"] += 1
+                counts[v["verdict"]] = counts.get(v["verdict"], 0) + 1
+            if (show == "held" and (accepted or v)) or (show == "accepted" and not accepted) \
+                    or (show == "checked" and not v):
+                continue
+            payload = candidate_payload(db, r["record_id"], r["source_id"]) or {}
+            shown = [str(f.get("value")) for f in payload.get("fields") or []
+                     if f.get("value") not in (None, "", [])][:3]
+            items.append({"record_id": r["record_id"], "source_id": r["source_id"],
+                          "label": " · ".join(shown) or r["record_id"],
+                          "accepted": accepted, "verdict": (v or {}).get("verdict"),
+                          "supported": str(r.get("judge_verdict") or "").lower() == "supported",
+                          "why": r.get("root_cause_class") or ""})
+        # The sharpest first: the fact-check read the paper and called it supported while the
+        # gate held it. Both sides are argued, so each one is a fast, strong label.
+        items.sort(key=lambda i: (not i["supported"]) if show == "held" else 0)
+        return {"counts": counts, "items": items}
 
+    def check_record(self, pr: Project, record_id: str, source_id: str) -> dict:
+        row = next((r for r in review_queue(str(pr.p["db"]), limit=5000,
+                                            order="by_root_cause")["queue"]
+                    if r["record_id"] == record_id and r["source_id"] == source_id), None)
+        v = record_view(str(pr.p["db"]), str(pr.p["sources"]), record_id, source_id, row=row,
+                        autoaccept=float(pr.config().get("auto_accept_threshold") or 0.95))
+        v["verdict"] = self._verdicts(pr).get((source_id, record_id))
+        return v
+
+    def check_verdict(self, pr: Project, record_id: str, source_id: str, verdict: str,
+                      note: str) -> dict:
+        verdict = (verdict or "").strip().lower()
+        if verdict not in ALL_VERDICTS:
+            raise Plain("Choose right, wrong or can't tell.")
+        # Re-derived from the database and the paper, never taken from the page: this is the
+        # half of the rule that holds when the page is stale or wrong.
+        refusal = may_record(self.check_record(pr, record_id, source_id), verdict)
+        if refusal:
+            raise Plain(refusal)
+        out = record_adjudication(record_id, source_id, verdict, str(pr.p["db"]), note=note,
+                                  adjudicator=tag_adjudicator("researcher", "browser"))
+        if not out.get("recorded"):
+            raise Plain(out.get("reason") or "The verdict was not saved.")
+        return {"recorded": True}
+
+    # step 6
     def export(self, pr: Project) -> dict:
         project.export(pr.root)
         return pr.results()
@@ -489,6 +568,13 @@ def make_handler(app: App):
                                        "projects": app.projects()})
                 if url.path == "/api/state":
                     return self._json({"ok": True, **app.project(q.get("p")).state()})
+                if url.path == "/api/check/queue":
+                    pr = app.project(q.get("p"))
+                    return self._json({"ok": True, **app.check_queue(pr, q.get("show", "held"))})
+                if url.path == "/api/check/record":
+                    pr = app.project(q.get("p"))
+                    return self._json({"ok": True, **app.check_record(
+                        pr, q.get("record_id", ""), q.get("source_id", ""))})
                 if url.path == "/api/job":
                     return self._json({"ok": True, **app.jobs.get(q.get("id", ""))})
                 return self._send(404, b"not found", "text/plain")
@@ -549,8 +635,9 @@ def make_handler(app: App):
                 return app.start(pr, b.get("mode"), b.get("audit"))
             if path == "/api/pause":
                 return app.pause(pr)
-            if path == "/api/review":
-                return app.review(pr)
+            if path == "/api/check/verdict":
+                return app.check_verdict(pr, b.get("record_id", ""), b.get("source_id", ""),
+                                         b.get("verdict", ""), b.get("note", ""))
             if path == "/api/checked":
                 it = pr.intake()
                 it["checked"] = _now()
@@ -573,6 +660,42 @@ def make_handler(app: App):
     return Handler
 
 
+# The block letters are the "ANSI Shadow" style, built from box-drawing characters so they render in
+# any macOS terminal font. Colour only when the output is a terminal that says it can show it.
+LOGO = (
+    "██╗     ██╗████████╗██████╗ ██████╗ ██████╗ ",
+    "██║     ██║╚══██╔══╝╚════██╗██╔══██╗██╔══██╗",
+    "██║     ██║   ██║    █████╔╝██║  ██║██████╔╝",
+    "██║     ██║   ██║   ██╔═══╝ ██║  ██║██╔══██╗",
+    "███████╗██║   ██║   ███████╗██████╔╝██████╔╝",
+    "╚══════╝╚═╝   ╚═╝   ╚══════╝╚═════╝ ╚═════╝ ",
+)
+MARK = ("▄▀█ █▀█", "█▀█ █▀▀")
+BLUE = ((96, 165, 250), (59, 130, 246), (37, 99, 235), (29, 78, 216), (30, 64, 175), (30, 58, 138))
+
+
+def banner(url: str, home: pathlib.Path, *, colour: bool | None = None) -> str:
+    if colour is None:
+        colour = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None \
+            and os.environ.get("TERM") != "dumb"
+    paint = (lambda rgb, t: f"\033[38;2;{rgb[0]};{rgb[1]};{rgb[2]}m{t}\033[0m") if colour \
+        else (lambda rgb, t: t)
+    dim = (lambda t: f"\033[2m{t}\033[0m") if colour else (lambda t: t)
+    bold = (lambda t: f"\033[1m{t}\033[0m") if colour else (lambda t: t)
+    try:
+        where = "~/" + str(home.relative_to(pathlib.Path.home()))
+    except ValueError:
+        where = str(home)
+    lines = [""] + ["  " + paint(BLUE[i], row) for i, row in enumerate(LOGO)]
+    lines += ["  " + dim("literature  →  a database you can defend"), "",
+              "  lit2db is opening in your default browser.",
+              "  If it does not open, paste this link into your browser:  " + bold(url), "",
+              "  Your databases are kept in " + where,
+              "  Leave this window open while you use lit2db. Press Control-C to close it.", ""]
+    lines += ["  " + paint(BLUE[2], row) for row in MARK] + [""]
+    return "\n".join(lines)
+
+
 def serve(*, here: pathlib.Path | None = None, home: pathlib.Path = DEFAULT_HOME,
           port: int = 8770, open_browser: bool = True) -> None:
     app = App(home=home, here=here, port=port)
@@ -586,8 +709,7 @@ def serve(*, here: pathlib.Path | None = None, home: pathlib.Path = DEFAULT_HOME
             webbrowser.open(url)
         return
     url = f"http://127.0.0.1:{port}/"
-    print(f"lit2db is open at {url}\nYour databases are kept in {app.home}\n"
-          "Leave this window open while you use it. Press Control-C here to close lit2db.")
+    print(banner(url, app.home), flush=True)
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
@@ -595,5 +717,4 @@ def serve(*, here: pathlib.Path | None = None, home: pathlib.Path = DEFAULT_HOME
     except KeyboardInterrupt:
         print("\nlit2db closed. Anything still reading carries on; type lit2db to look in.")
     finally:
-        app.stop_review()
         httpd.server_close()

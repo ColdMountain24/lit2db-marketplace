@@ -8,6 +8,10 @@ const STEPS = [
   ["reading", "Reading"], ["checking", "Checking"], ["spreadsheets", "Spreadsheets"]];
 const LABEL = Object.fromEntries(STEPS);
 const ORDER = STEPS.map(s => s[0]);
+// The purposes the page offers (D-212). Mirrors intake.PURPOSES; the server refuses anything else.
+const PURPOSES = { reference: "A reference table to look values up",
+  classification: "Predict a category", regression: "Predict a number",
+  knowledge_graph: "Map how things relate" };
 const KINDS = [["name", "a name, as printed"], ["number", "a number"], ["count", "a whole number"],
   ["category", "one of a short list"], ["text", "a sentence"]];
 
@@ -37,7 +41,7 @@ async function api(path, body) {
   return j;
 }
 
-function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
+function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; S.poll = null; }
 function every(ms, fn) { const t = setInterval(fn, ms); S.timers.push(t); return t; }
 
 function showError(msg) {
@@ -52,6 +56,36 @@ function setSize(sz) {
   document.documentElement.dataset.size = sz;
   try { localStorage.setItem("lit2db.size", sz); } catch (e) { /* private window: fine */ }
   document.querySelectorAll(".size button").forEach(b => b.classList.toggle("on", b.dataset.size === sz));
+}
+
+// ---------- sound: a bell when reading finishes, with a switch (AP, 2026-10-13) ----------
+// Browsers only let a page make sound after the person has clicked something, so the audio
+// context is opened on the first click and reused; the bell itself is synthesised, no file.
+let AC = null;
+const soundOn = () => { try { return localStorage.getItem("lit2db.sound") !== "off"; } catch (e) { return true; } };
+function audio() {
+  try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === "suspended") AC.resume(); }
+  catch (e) { AC = null; }
+  return AC;
+}
+document.addEventListener("click", audio, { capture: true });
+function bell() {
+  if (!soundOn() || !audio()) return;
+  const now = AC.currentTime;
+  [[880, 0.32], [1318.5, 0.16], [2217, 0.07]].forEach(([f, g]) => {
+    const o = AC.createOscillator(), v = AC.createGain();
+    o.type = "sine"; o.frequency.value = f;
+    v.gain.setValueAtTime(0, now);
+    v.gain.linearRampToValueAtTime(g, now + 0.01);
+    v.gain.exponentialRampToValueAtTime(0.0001, now + 2.4);
+    o.connect(v).connect(AC.destination); o.start(now); o.stop(now + 2.5);
+  });
+}
+function showSound() {
+  const b = $("#sound"); if (!b) return;
+  b.classList.toggle("on", soundOn());
+  b.title = soundOn() ? "Sound is on: a bell rings when reading finishes" : "Sound is off";
+  b.setAttribute("aria-pressed", soundOn() ? "true" : "false");
 }
 
 // ---------- routing ----------
@@ -72,7 +106,8 @@ async function route() {
   if (!m) return showHome();
   const pid = decodeURIComponent(m[1]);
   if (pid !== S.pid) Object.assign(S, { R: null, query: null, abstracts: null, mode: null,
-    audit: null, reviewUrl: null, exported: false, editing: -1, editQuery: false });
+    audit: null, exported: false, editing: -1, editQuery: false });
+  if (S.view !== "checking") S.check = null;
   S.pid = pid;
   try { await refresh(); } catch (e) { location.hash = "#/"; return; }
   const step = m[2] && LABEL[m[2]] ? m[2] : S.st.current;
@@ -95,6 +130,8 @@ function render() {
   const views = { question: vQuestion, collect: vCollect, papers: vPapers, reading: vReading,
     checking: vChecking, spreadsheets: vSheets };
   main().onchange = null;
+  main().onclick = null;
+  main().classList.toggle("wide", S.view === "checking");
   main().innerHTML = views[S.view]();
   const after = { question: aQuestion, papers: aPapers, reading: aReading, checking: aChecking,
     spreadsheets: aSheets }[S.view];
@@ -138,8 +175,6 @@ async function showHome() {
       <span class="pnext">Next: ${esc(LABEL[p.current] || "")} →</span></button>`).join("");
   main().innerHTML = `
     <h1>Your databases</h1>
-    <p class="lede">Each one starts from a question and ends as spreadsheets, where every value
-      carries the sentence it came from.</p>
     ${list ? `<div class="card">${list}</div>` : ""}
     <div class="card">
       <h2>Start a new database</h2>
@@ -199,6 +234,8 @@ function aQuestion() {
 // ---------- 2. what to collect ----------
 function rulings() {
   if (!S.R) S.R = JSON.parse(JSON.stringify(S.st.intake.rulings));
+  // Drafts made before D-212 have no purpose ruling; start from what the draft suggested.
+  if (!S.R.purpose) S.R.purpose = S.st.intake.proposal.purpose.ml_task;
   return S.R;
 }
 const labelOf = n => (rulings().columns.find(c => c.name === n) || {}).label || n;
@@ -223,17 +260,15 @@ function vCollect() {
       <span><span class="t">${esc(o.label)}</span>${o.suggested ? '<span class="tag">Suggested</span>' : ""}
       <div class="d">${esc(o.description)}${o.suggested && o.why ? " " + esc(o.why) : ""}</div></span></label>`).join("");
   const own = `<label class="opt"><input type="radio" name="row" value="own" ${R.row.choice === "own" ? "checked" : ""}><span class="radio"></span>
-      <span><span class="t">Something else</span><input type="text" class="own" id="ownrow" placeholder="Describe one row in your own words" value="${esc(R.row.own)}"></span></label>`;
+      <span><span class="t">Other</span><input type="text" class="own" id="ownrow" placeholder="Expand on it in your own words" value="${esc(R.row.own)}"></span></label>`;
   const on = ticked();
   const must = on.filter(c => c.required).length;
-  return `${stepHead(2, "What should each row of your table hold?",
-    "lit2db drafted a table from your question. Tick what you want, change anything that is not quite right, and add what is missing. Nothing has been searched or downloaded yet.")}
+  return `${stepHead(2, "What should each row of your table hold?")}
     <div class="card"><div class="said"><div class="qm">“</div><div>
       <div class="k">Your question</div><div class="q">${esc(it.question)}</div>
       <button class="linkish" data-go="question">Change the question</button></div></div></div>
     <div class="card"><h2>One row of your table is…</h2><p class="sub">This decides what counts as one entry.</p>${rows}${own}</div>
     <div class="card"><h2>For each row, collect…</h2>
-      <p class="sub">Green came from your question. Clay is a suggestion, with its reason one click away.</p>
       ${R.columns.map(colCard).join("")}
       <div class="addcol"><input type="text" id="newcol" placeholder="Add a column in your own words">
         <select id="newkind">${KINDS.map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>
@@ -286,7 +321,7 @@ function decidedCard(P, R) {
     `<button class="chip ${list.includes(c.name) ? "on" : ""}" ${attr}="${esc(c.name)}">${esc(c.label)}</button>`).join("")}</div>`;
   const ex = R.exclusions.map((x, i) => `<div class="d"><span class="${x.on ? "" : "off"}">Leave out ${esc(x.text.charAt(0).toLowerCase() + x.text.slice(1))}.</span>
       <label class="toggle"><input type="checkbox" data-ex="${i}" ${x.on ? "checked" : ""}> ${x.on ? "On" : "Off"}</label></div>`).join("");
-  return `<div class="card defaults"><h2>We decided these for you</h2><p class="sub">Sensible defaults. Change any of them.</p>
+  return `<div class="card defaults"><h2>Other</h2>
     <div class="d"><span>Two rows count as the same when <b>${idn.map(n => esc(labelOf(n))).join(", ") || "nothing"}</b> all match.
       ${S.showIdentity ? chips(R.identity, "data-idn") : ""}</span>
       <button class="mini" data-act="showidn">${S.showIdentity ? "Done" : "Change"}</button></div>
@@ -296,8 +331,10 @@ function decidedCard(P, R) {
     ${ex}
     <div class="d"><span><input type="text" id="newex" placeholder="Leave out another kind of paper, for example “studies in cell culture only”"></span>
       <button class="mini" id="addex">Add</button></div>
-    <div class="d"><span>What the table is for: ${esc(P.purpose.plain || P.purpose.ml_task)}</span><span class="lock">From the draft</span></div>
-    <div class="d"><span>When a paper reports nothing: ${esc(P.negative_data)}</span><span class="lock">From the draft</span></div>
+    <div class="d"><span><b>Database purpose:</b>
+      <span class="chips">${Object.entries(PURPOSES).map(([k, l]) =>
+        `<button class="chip ${R.purpose === k ? "on" : ""}" data-purpose="${k}">${esc(l)}${k === P.purpose.ml_task ? " · suggested" : ""}</button>`).join("")}</span></span></div>
+    <div class="d"><span><b>Negative values:</b> ${esc(P.negative_data)}</span><span class="lock">From the draft</span></div>
     <div class="d"><span>Every value keeps the exact sentence it came from.</span><span class="lock">Always on</span></div>
   </div>`;
 }
@@ -332,6 +369,7 @@ function onCollectClick(e) {
     R.identity = R.identity.includes(n) ? R.identity.filter(x => x !== n) : [...R.identity, n];
     save(); return render();
   }
+  if (t.dataset.purpose) { R.purpose = t.dataset.purpose; save(); return render(); }
   if (t.dataset.nrm) {
     const n = t.dataset.nrm;
     R.normalized = R.normalized.includes(n) ? R.normalized.filter(x => x !== n) : [...R.normalized, n];
@@ -483,19 +521,21 @@ function vReading() {
   const pg = S.st.progress, n = S.st.readable;
   if (pg.running || pg.done || pg.finished) {
     const pct = pg.total ? Math.round(100 * pg.done / pg.total) : 0;
-    const head = pg.finished ? stepHead(4, `All ${pg.total} papers read`)
+    const left = pg.total - pg.done;
+    const head = pg.finished ? stepHead(4, `<span class="good">All ${pg.total} papers read</span>`)
       : pg.running ? stepHead(4, "Reading your papers", "You can close this page, and even Terminal. Reading carries on; type lit2db to look in.")
-      : stepHead(4, `Paused after ${pg.done} of ${pg.total} papers`);
+      : pg.paused ? stepHead(4, `<span class="bad">Paused</span> after ${pg.done} of ${pg.total} papers`)
+      : stepHead(4, `${pg.done} of ${pg.total} papers read`, `<span class="warn">${left} ${left === 1 ? "paper" : "papers"} hit a problem and ${left === 1 ? "was" : "were"} not finished.</span> Trying again usually works; anything already read is kept.`);
     return `${head}
       <div class="card"><div class="big-num">${pg.done} <span style="font-size:1.2rem;color:var(--text-3)">of ${pg.total}</span></div>
         <div class="bar"><i style="width:${pct}%"></i></div>
-        <p>${pg.running ? `Now reading ${esc(pg.now || "the first paper")}. Started ${ago(pg.started)}.` : pg.finished ? "Every paper has been read and checked." : "Nothing is lost: carrying on picks up at the next paper."}</p>
+        <p>${pg.running ? `Now reading ${esc(pg.now || "the first paper")}. Started ${ago(pg.started)}.` : pg.finished ? "Every paper has been read and checked." : pg.paused ? "Nothing is lost: carrying on picks up at the next paper." : "Only the unfinished papers are read again."}</p>
         ${pg.questions ? `<p class="hint">lit2db noted ${pg.questions} things worth your eye along the way. They come up in Checking.</p>` : ""}
         <details class="why" style="margin-top:.6rem"><summary>What it is doing</summary><div class="log">${esc(pg.log.join("\n") || "Starting…")}</div></details></div>
       <div class="answer">
         ${pg.finished ? `<button class="yes" data-go="checking">Continue to Checking</button>`
           : pg.running ? `<button class="second" id="pause">Pause</button>`
-          : `<button class="yes" id="resume">Carry on reading</button>`}
+          : `<button class="yes" id="resume">${pg.paused ? "Carry on reading" : `Try the ${left === 1 ? "last paper" : left + " papers"} again`}</button>`}
         ${!pg.finished && pg.done ? `<button class="second" data-go="checking">Check what is read so far</button>` : ""}
       </div>`;
   }
@@ -535,42 +575,144 @@ function aReading() {
     try { await api("/api/pause", { p: S.pid }); setTimeout(async () => { await refresh(); render(); }, 1200); }
     catch (e) { showError(e.message); }
   };
-  if (pg.running) every(4000, async () => {
-    try { await refresh(); if (S.view === "reading") render(); } catch (e) { /* next tick */ }
+  // ONE watcher per visit. render() re-runs this function on every tick, so starting a timer
+  // here unconditionally stacked a new one each time.
+  if (pg.running && !S.poll) S.poll = every(4000, async () => {
+    try {
+      await refresh();
+      const now = S.st.progress;
+      if (!now.running) {
+        clearInterval(S.poll); S.poll = null;
+        if (now.finished) bell();
+      }
+      if (S.view === "reading") render();
+    } catch (e) { /* next tick */ }
   });
 }
 
-// ---------- 5. checking ----------
+// ---------- 5. checking, inside the page ----------
+// AP, 2026-10-13: checking belongs in the interface, not in a spreadsheet. The server applies the
+// review page's rule unchanged: no right/wrong on a value whose sentence cannot be shown.
+const colLabel = n => {
+  const c = ((S.st.intake.rulings || {}).columns || []).find(x => x.name === n);
+  return c ? c.label : String(n).replace(/_/g, " ").replace(/^./, x => x.toUpperCase());
+};
+const VERDICT = { right: "Right", wrong: "Wrong", cant_tell: "Can't tell" };
+
+async function loadCheck(show) {
+  S.check = S.check || {};
+  S.check.show = show || S.check.show || "held";
+  const r = await api(`/api/check/queue?p=${encodeURIComponent(S.pid)}&show=${S.check.show}`);
+  S.check.counts = r.counts; S.check.items = r.items;
+  const still = S.check.sel && r.items.find(i => i.record_id === S.check.sel.record_id && i.source_id === S.check.sel.source_id);
+  if (!still) S.check.sel = r.items[0] || null;
+  await loadRecord();
+}
+
+async function loadRecord() {
+  const sel = S.check.sel;
+  S.check.view = sel ? await api(`/api/check/record?p=${encodeURIComponent(S.pid)}&record_id=${encodeURIComponent(sel.record_id)}&source_id=${encodeURIComponent(sel.source_id)}`) : null;
+}
+
+function paperHTML(v) {
+  const t = v.source_text || "";
+  const spans = [];
+  (v.fields || []).forEach((f, i) => ((f.anchor || {}).spans || []).forEach(sp => {
+    if (sp.state === "exact" && sp.start != null) spans.push([sp.start, sp.end, i]);
+  }));
+  spans.sort((x, y) => x[0] - y[0]);
+  let out = "", at = 0;
+  for (const [a, b, i] of spans) {
+    if (a < at) continue;                       // overlapping quotes: the first one shows
+    out += esc(t.slice(at, a)) + `<mark data-f="${i}">${esc(t.slice(a, b))}</mark>`;
+    at = b;
+  }
+  return out + esc(t.slice(at));
+}
+
 function vChecking() {
-  const r = S.st.results;
-  const acc = r.accepted ? r.accepted.rows : 0, cand = r.candidates ? r.candidates.rows : 0;
-  return `${stepHead(5, "Check what lit2db was not sure about",
-    "Values that passed every check are already in your table. The rest were held back, each with its reason. Your verdicts are what let the bar be set from your own judgement rather than a guess.")}
-    <div class="card"><div class="stats">
-      <div class="stat"><div class="n">${acc}</div><div class="l">accepted</div></div>
-      <div class="stat"><div class="n">${cand}</div><div class="l">held for you</div></div></div>
-      ${acc === 0 && cand ? `<p class="hint" style="margin-top:.8rem">An empty accepted list is the normal first result. The bar starts high on purpose, so values wait for you rather than entering unchecked.</p>` : ""}</div>
-    ${S.reviewUrl ? `<iframe class="review" src="${esc(S.reviewUrl)}" title="Checking page"></iframe>
-      <p class="hint"><a href="${esc(S.reviewUrl)}" target="_blank" rel="noopener">Open the checking page in its own tab</a></p>`
-      : `<div class="card"><h2>The checking page</h2><p>Each held value sits beside the paper it came from, with the sentence highlighted. Say whether it is right, wrong, or cannot be told.</p>
-        <div class="answer"><button class="yes" id="openreview" ${cand ? "" : "disabled"}>Open the checking page</button></div></div>`}
+  const C = S.check || {}, k = C.counts || {};
+  if (!C.counts) return `${stepHead(5, "Check what lit2db was not sure about")}${waitCard("Loading what lit2db held back…", "Reading the database.")}`;
+  const tab = (key, l, n) => `<button class="chip ${C.show === key ? "on" : ""}" data-show="${key}">${l} · ${n}</button>`;
+  const list = (C.items || []).map(i => `<button class="citem ${C.sel && C.sel.record_id === i.record_id && C.sel.source_id === i.source_id ? "on" : ""}" data-rid="${esc(i.record_id)}" data-sid="${esc(i.source_id)}">
+      <span class="cl">${esc(i.label)}</span>
+      <span class="cm">${esc(i.source_id)}${i.supported && !i.accepted ? " · fact-check said supported" : ""}${i.verdict ? " · you said " + VERDICT[i.verdict].toLowerCase() : ""}</span></button>`).join("")
+    || `<p class="hint" style="padding:.6rem">${C.show === "held" ? "Nothing is waiting for you here." : "Nothing here yet."}</p>`;
+  return `${stepHead(5, "Check what lit2db was not sure about")}
+    <div class="stats" style="margin-bottom:1rem">
+      <div class="stat"><div class="n">${k.accepted || 0}</div><div class="l">accepted</div></div>
+      <div class="stat"><div class="n">${k.held || 0}</div><div class="l">held for you</div></div>
+      <div class="stat"><div class="n">${k.checked || 0}</div><div class="l">checked: ${k.right || 0} right, ${k.wrong || 0} wrong</div></div>
+    </div>
+    <div class="chips" style="margin-bottom:1rem">${tab("held", "Held back", Math.max(0, (k.held || 0) - (k.checked || 0)))}${tab("accepted", "Accepted", k.accepted || 0)}${tab("checked", "Checked", k.checked || 0)}</div>
+    <div class="checkgrid"><div class="clist">${list}</div><div class="cview">${C.view ? recordCard(C.view) : ""}</div></div>
     <div class="answer"><button class="second" id="donecheck">I am done checking for now</button></div>`;
 }
 
+function recordCard(v) {
+  const fields = (v.fields || []).filter(f => f.value !== null && f.value !== "" && !(Array.isArray(f.value) && !f.value.length));
+  const row = `<div class="rowwrap"><table class="rowt"><tr>${fields.map((f, i) => `<th>${esc(colLabel(f.field_name))}</th>`).join("")}</tr>
+    <tr>${fields.map(f => `<td><button class="cell" data-f="${v.fields.indexOf(f)}">${esc(Array.isArray(f.value) ? f.value.join(", ") : f.value)}</button></td>`).join("")}</tr></table></div>`;
+  const links = (v.source_links || []).map(l => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join(" · ");
+  const allowed = v.verdicts_allowed || [];
+  const said = v.verdict ? `<p class="hint">You said <b>${VERDICT[v.verdict.verdict] || v.verdict.verdict}</b>${v.verdict.note ? `: “${esc(v.verdict.note)}”` : ""}. Choose again to change it.</p>` : "";
+  return `<div class="card ccard">
+      <div class="k">${esc(v.source_id)}${links ? " · " + links : ""}</div>
+      <h2 style="margin:.3rem 0 .8rem">${v.decision === "allow" ? "Accepted. Is it right?" : "Held back. Is it right?"}</h2>
+      ${row}<p class="hint">Click a value to see the sentence it came from.</p>
+      ${v.decision !== "allow" && (v.stopped_short_because || []).length ? `<details class="why" open><summary>Why it was held</summary><ul class="reasons">${v.stopped_short_because.map(r => `<li>${esc(r.replace(/'([a-z0-9_]+)'/g, (m, n) => `“${colLabel(n)}”`))}</li>`).join("")}</ul></details>` : ""}
+      <div class="paper" id="paper">${paperHTML(v)}</div>
+      ${v.blocked_because ? `<div class="notice warn" style="margin-top:.8rem">${esc(v.blocked_because)}</div>` : ""}
+      ${said}
+      <input type="text" id="vnote" placeholder="A note, if you want one (kept exactly as you type it)">
+      <div class="verdicts">${["right", "wrong", "cant_tell"].map((x, i) => `<button class="vb v-${x}" data-verdict="${x}" ${allowed.includes(x) ? "" : "disabled"}>${VERDICT[x]} <kbd>${i + 1}</kbd></button>`).join("")}</div>
+    </div>`;
+}
+
+function scrollToField(i) {
+  const panel = $("#paper"), m = panel && panel.querySelector(`mark[data-f="${i}"]`);
+  if (!m) return;
+  panel.querySelectorAll("mark.flash").forEach(x => x.classList.remove("flash"));
+  m.classList.add("flash");
+  panel.scrollTop = m.offsetTop - panel.clientHeight / 3;          // the panel is the offset parent
+}
+
+async function giveVerdict(verdict) {
+  const sel = S.check && S.check.sel;
+  if (!sel) return;
+  try {
+    await api("/api/check/verdict", { p: S.pid, record_id: sel.record_id, source_id: sel.source_id,
+      verdict, note: ($("#vnote") || {}).value || "" });
+    const items = S.check.items || [], at = items.findIndex(i => i.record_id === sel.record_id && i.source_id === sel.source_id);
+    S.check.sel = items[at + 1] || items[at - 1] || null;
+    await loadCheck(); render();
+  } catch (e) { showError(e.message); }
+}
+
 function aChecking() {
-  if (!S.st.results.candidates && !S.exported) {
-    S.exported = true;
-    api("/api/export", { p: S.pid }).then(async () => { await refresh(); render(); }).catch(e => showError(e.message));
+  if (!S.check || !S.check.counts) {
+    loadCheck("held").then(render).catch(e => showError(e.message));
+    return;
   }
-  if ($("#openreview")) $("#openreview").onclick = async () => {
-    try { const r = await api("/api/review", { p: S.pid }); S.reviewUrl = r.url; render(); }
-    catch (e) { showError(e.message); }
-  };
+  const first = $("#paper mark"); if (first) scrollToField(first.dataset.f);
   $("#donecheck").onclick = async () => {
     try { await api("/api/checked", { p: S.pid }); await refresh(); go("spreadsheets"); }
     catch (e) { showError(e.message); }
   };
+  main().onclick = async e => {
+    const t = e.target.closest("button"); if (!t) return;
+    if (t.dataset.show) { S.check.sel = null; await loadCheck(t.dataset.show); return render(); }
+    if (t.dataset.rid) { S.check.sel = { record_id: t.dataset.rid, source_id: t.dataset.sid }; await loadRecord(); return render(); }
+    if (t.classList.contains("cell")) return scrollToField(t.dataset.f);
+    if (t.dataset.verdict) return giveVerdict(t.dataset.verdict);
+  };
 }
+document.addEventListener("keydown", e => {
+  if (S.view !== "checking" || /input|textarea/i.test((e.target || {}).tagName || "")) return;
+  const v = { "1": "right", "2": "wrong", "3": "cant_tell" }[e.key];
+  const b = v && document.querySelector(`button[data-verdict="${v}"]`);
+  if (b && !b.disabled) giveVerdict(v);
+});
 
 // ---------- 6. spreadsheets ----------
 function vSheets() {
@@ -614,6 +756,11 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("change", e => { if (S.view === "collect") onCollectChange(e); });
 document.addEventListener("input", e => { if (S.view === "collect") onCollectInput(e); });
+$("#sound").onclick = () => {
+  try { localStorage.setItem("lit2db.sound", soundOn() ? "off" : "on"); } catch (e) { /* fine */ }
+  showSound(); if (soundOn()) bell();
+};
+showSound();
 $("#help").onclick = () => { $("#helpbox").hidden = false; };
 $("#helpclose").onclick = () => { $("#helpbox").hidden = true; };
 $("#helpbox").onclick = e => { if (e.target.id === "helpbox") $("#helpbox").hidden = true; };
