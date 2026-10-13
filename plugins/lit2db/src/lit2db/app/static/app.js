@@ -132,6 +132,7 @@ function render() {
   main().onchange = null;
   main().onclick = null;
   main().classList.toggle("wide", S.view === "checking");
+  document.body.classList.toggle("wide", S.view === "checking");
   main().innerHTML = views[S.view]();
   const after = { question: aQuestion, papers: aPapers, reading: aReading, checking: aChecking,
     spreadsheets: aSheets }[S.view];
