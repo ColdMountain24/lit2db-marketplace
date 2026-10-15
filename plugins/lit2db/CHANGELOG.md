@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.54.0 · 2026-10-15
+The first release under AGPL-3.0-or-later. `lit2db` in Terminal now opens a page that walks a
+researcher from a question to spreadsheets.
+
+### The front door (D-211, D-212)
+- One command opens a local page with six steps: your question, what to collect, which papers,
+  reading, checking, spreadsheets. The interview is proposals to tick, and the spec is still built
+  through `SchemaReadySpec`, so what the page writes is what the gate enforces.
+- Checking happens in the page: each held or accepted value is shown as its row, with its reasons
+  and the paper scrolled to the quoted sentence. Verdicts go through the same refusal the review
+  page uses.
+- A database's purpose is a ruled choice, and "reference table" is one of them.
+- `install.sh` installs the command from one pasted line, with uv supplying its own Python.
+
+### A project in the researcher's own folder (D-199)
+- Search, fetch, plan, run and export from a project folder. The server starts through uv, so a
+  stock Mac (python3 3.9.6) runs it.
+- Fixes from the first clean runs: preflight checks every key the pipeline indexes; enum fields
+  ground on their evidence (D-061); `fetch` labels a conference abstract as one; each merged
+  record gets its own id; `plan` can say which fields are normalized and what never auto-accepts.
+- From a project folder, review the sharpest records, then see what the verdicts say about the bar.
+
+### Reading
+- PDFs become offset-anchored stores (D-206). A lean run mode, one read and one check per paper,
+  measured 88k work tokens a paper against 425k for the default (D-208).
+- Footnote markers: a missing label is recovered and a crowded `<fn>` is split, only where a value
+  in the same table wears the marker (D-195, D-197). A table structure sidecar keeps what a value
+  meant.
+- A normalized value records which authority normalized it, and at what version (D-192).
+
+### What the gate enforces
+- Locked fields reach the gate: `plan` writes them, the run and replay enforce them, and preflight
+  refuses a config that drops them.
+
+### Uncertainty beside a measured value (D-203)
+A value with no error bar can be listed but never pooled. A project can now declare, for a numeric
+field, seven companion fields saying what the source printed beside it: spread type, spread,
+lower and upper limit, confidence level, n per group, n total.
+
+- **`src/lit2db/uncertainty.py`**, stdlib-only. The vocabulary is ClinicalTrials.gov's
+  `MeasureDispersionType` (checked against its API on 2026-10-03), minus `Not Applicable` and
+  `Geometric Coefficient of Variation`, plus `not reported`. `companion_fields()` proposes the
+  seven as FieldSpec dicts; a project still ratifies them through its ledger.
+- **The spec refuses a partial group** (`SchemaReadySpec._uncertainty_groups_are_whole`): all
+  seven companions of one plain numeric field, the exact vocabulary, none held in the review lane.
+- **The gate tells three facts apart**: absent (the reading did not answer), `not reported` (the
+  source does not give it, checkable by the judge), and `0`. A blank, `NR` or `n/a` is refused as
+  unreadable. A spread whose type and values disagree is held, because it cannot be converted to a
+  standard error. Threaded through `gate_reasons`, `output.upsert`, `gate_upsert`, the PreToolUse
+  hook, `run_wave.py` and `replay.py`; empty groups leave every caller exactly as before.
+- **`plan` writes the groups into `run.json`, and preflight refuses a config that does not apply
+  the groups its spec ratified**, which is what a hand-edited `run.json` would otherwise do quietly.
+- A `not reported` companion grounds on its anchored evidence, like an enum (D-061), and the
+  model grounder is never asked to find an absence. The judge's claim states it as an absence.
+- Replayed over the first BBB wave (7 papers, 56 records) at zero model calls: output identical to
+  the previous code, as it must be for a spec that declares no group. Suite 897 to 934.
+
+### Review papers (M13, D-201)
+- The PRISMA flow, emitted from the provenance record. A stage nothing can answer prints
+  "not counted".
+- Claims align by where they were read, not by what they say. Theme sets are proposed, ratified
+  and frozen into the spec, like a schema.
+
+### Licence and the study
+- Relicensed to AGPL-3.0-or-later. Releases through v0.53.0 were MIT and stay MIT.
+- The pre-registered primary outcome (`footnote_resolution_rate`) ships as tested code.
+
+Suite: 773 to 964 tests on a minimal PATH (994 on a full one).
+
 ## 0.53.0 — 2026-08-26
 Three shipped agents had no command that reached them. The checker that would have caught it
 did not exist, so it was built first — and it caught all three on its first run.
@@ -31,29 +100,6 @@ did not exist, so it was built first — and it caught all three on its first ru
   work, and 0.49.0–0.51.0 were tagged without changelog entries. Not retroactively re-dated here.
 
 ## Unreleased
-### Uncertainty beside a measured value (D-203), on the `first-testers` branch
-A value with no error bar can be listed but never pooled. A project can now declare, for a numeric
-field, seven companion fields saying what the source printed beside it: spread type, spread,
-lower and upper limit, confidence level, n per group, n total.
-
-- **`src/lit2db/uncertainty.py`**, stdlib-only. The vocabulary is ClinicalTrials.gov's
-  `MeasureDispersionType` (checked against its API on 2026-10-03), minus `Not Applicable` and
-  `Geometric Coefficient of Variation`, plus `not reported`. `companion_fields()` proposes the
-  seven as FieldSpec dicts; a project still ratifies them through its ledger.
-- **The spec refuses a partial group** (`SchemaReadySpec._uncertainty_groups_are_whole`): all
-  seven companions of one plain numeric field, the exact vocabulary, none held in the review lane.
-- **The gate tells three facts apart**: absent (the reading did not answer), `not reported` (the
-  source does not give it, checkable by the judge), and `0`. A blank, `NR` or `n/a` is refused as
-  unreadable. A spread whose type and values disagree is held, because it cannot be converted to a
-  standard error. Threaded through `gate_reasons`, `output.upsert`, `gate_upsert`, the PreToolUse
-  hook, `run_wave.py` and `replay.py`; empty groups leave every caller exactly as before.
-- **`plan` writes the groups into `run.json`, and preflight refuses a config that does not apply
-  the groups its spec ratified**, which is what a hand-edited `run.json` would otherwise do quietly.
-- A `not reported` companion grounds on its anchored evidence, like an enum (D-061), and the
-  model grounder is never asked to find an absence. The judge's claim states it as an absence.
-- Replayed over the first BBB wave (7 papers, 56 records) at zero model calls: output identical to
-  the previous code, as it must be for a spec that declares no group. Suite 897 to 934.
-
 ### Earlier, not yet released
 The review queue is ordered by root cause, and an authority-resolved value stops blocking a verdict.
 
