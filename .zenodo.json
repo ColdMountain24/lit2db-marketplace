@@ -1,0 +1,20 @@
+{
+  "title": "lit2db: research databases built from published papers, with every value anchored to its source sentence",
+  "upload_type": "software",
+  "creators": [
+    {
+      "name": "Pathak, Aryan",
+      "affiliation": "University of Florida"
+    }
+  ],
+  "description": "lit2db builds a research database from published papers on the researcher's own computer. Each extracted value keeps the exact sentence it came from and its position in the paper, values the tool cannot support are held for review instead of guessed, and the bar for accepting a value is set from the researcher's own checks.",
+  "license": "agpl-3.0-or-later",
+  "keywords": [
+    "data extraction",
+    "literature mining",
+    "provenance",
+    "reproducibility",
+    "evidence synthesis",
+    "large language models"
+  ]
+}

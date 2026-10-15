@@ -175,7 +175,7 @@ uv run --no-project --python ">=3.10" --with "pydantic>=2,<3" --with "mcp>=1.0,<
     --with certifi --with "pytest>=7" --with "pyyaml>=6" python -m pytest -q
 ```
 
-Expect the suite to pass — **at least 964 tests** as of v0.54.0, with 2 skipped (network tests;
+Expect the suite to pass — **at least 964 tests** as of v0.54.1, with 2 skipped (network tests;
 `LIT2DB_NETWORK_TESTS=1` runs them). A number below that means you are on an older checkout.
 
 The two worth naming to a skeptic are `test_smoke.py` — the ratification-ledger invariant, i.e.

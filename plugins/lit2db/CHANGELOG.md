@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.1 · 2026-10-15
+Archived on Zenodo. `.zenodo.json` at the repository root gives the record its title, author,
+affiliation and licence (AGPL-3.0-or-later), so each release from here on gets a DOI. No code
+changes.
+
 ## 0.54.0 · 2026-10-15
 The first release under AGPL-3.0-or-later. `lit2db` in Terminal now opens a page that walks a
 researcher from a question to spreadsheets.
